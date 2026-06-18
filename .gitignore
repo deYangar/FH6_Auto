@@ -29,6 +29,11 @@ oldversion/
 bk/
 debug/
 
+# Test / dev files
+main ocr test.py
+fh6_auto_main.py
+build_tester.bat
+
 # IDE / OS files
 .idea/
 .vscode/
