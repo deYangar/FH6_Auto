@@ -124,16 +124,27 @@ class BackgroundInputManager:
         self._send_key(key, down=False)
         time.sleep(0.02)
 
-    def click(self, x, y, double=False):
-        """在窗口客户区坐标 (x, y) 点击"""
+    def click(self, x, y, double=False, use_send=False):
+        """在窗口客户区坐标 (x, y) 点击
+        use_send=True 时用 SendMessage（同步，更可靠但可能阻塞）
+        """
         lp = win32api.MAKELONG(int(x), int(y))
-        win32gui.PostMessage(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
-        time.sleep(0.02)
+        sender = win32gui.SendMessage if use_send else win32gui.PostMessage
+
+        sender(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
+        time.sleep(0.05)
         for _ in range(2 if double else 1):
-            win32gui.PostMessage(self.hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lp)
-            time.sleep(0.05)
-            win32gui.PostMessage(self.hwnd, win32con.WM_LBUTTONUP, win32con.MK_LBUTTON, lp)
-            time.sleep(0.05)
+            sender(self.hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lp)
+            time.sleep(0.08)
+            sender(self.hwnd, win32con.WM_LBUTTONUP, win32con.MK_LBUTTON, lp)
+            time.sleep(0.08)
+
+    def click_with_confirm(self, x, y, confirm_key="enter", double=False):
+        """点击 + 发送确认键（用于游戏内需要 Enter/Space 确认的按钮）"""
+        self.click(x, y, double=double, use_send=False)
+        time.sleep(0.15)
+        self.press(confirm_key, delay=0.1)
+        time.sleep(0.15)
 
     def _send_key(self, key, down=True, is_repeat=False, send_char=False):
         key = key.lower()

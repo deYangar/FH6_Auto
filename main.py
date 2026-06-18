@@ -8,6 +8,7 @@ import time
 import shutil
 import ctypes
 import subprocess
+import tkinter as tk
 # ====== 【新增】:启动前置环境检测 (防闪退机制) ======
 def check_windows_dependencies():
     if sys.platform != "win32":
@@ -875,7 +876,40 @@ class FH_UltimateBot(ctk.CTk):
             font=ctk.CTkFont(size=15),
         )
         self.log_box.pack(side="left", fill="both", expand=True)
+        # 右键菜单：复制 / 复制全部
+        self._log_menu = tk.Menu(self, tearoff=0)
+        self._log_menu.add_command(label="复制选中", command=self._copy_log_selection)
+        self._log_menu.add_command(label="复制全部", command=self._copy_log_all)
+        self.log_box.bind("<Button-3>", self._show_log_menu)
         #ocr加载
+
+    def _show_log_menu(self, event):
+        try:
+            self._log_menu.post(event.x_root, event.y_root)
+        except Exception:
+            pass
+
+    def _copy_log_selection(self):
+        try:
+            self.log_box.configure(state="normal")
+            sel = self.log_box.get("sel.first", "sel.last")
+            self.log_box.configure(state="disabled")
+            if sel:
+                self.clipboard_clear()
+                self.clipboard_append(sel)
+        except Exception:
+            pass
+
+    def _copy_log_all(self):
+        try:
+            self.log_box.configure(state="normal")
+            text = self.log_box.get("1.0", "end-1c")
+            self.log_box.configure(state="disabled")
+            if text:
+                self.clipboard_clear()
+                self.clipboard_append(text)
+        except Exception:
+            pass
 
     def update_timer(self):
         if not self.is_running:
@@ -999,25 +1033,32 @@ class FH_UltimateBot(ctk.CTk):
         # 【后台化】不再移动物理鼠标，PostMessage 点击直接指定客户区坐标
         # 保留空函数以兼容旧代码调用
         pass
-    def game_click(self, pos, double=False):
+    def game_click(self, pos, double=False, confirm_key=None):
+        """
+        在指定坐标点击。
+        confirm_key: 点击后额外发送的确认键（如 "enter"），用于游戏内需确认的按钮
+        """
         self.check_pause()
         if not self.is_running or not pos:
             return
         x, y = int(pos[0]), int(pos[1])
 
-        # 【后台化】使用 PostMessage 在窗口内点击，坐标已经是屏幕绝对坐标
-        # 需要转换为窗口客户区相对坐标
         if self.game_hwnd and self.bg_input:
             try:
                 gx, gy, gw, gh = self.regions["全界面"]
                 rel_x = x - gx
                 rel_y = y - gy
-                self.bg_input.click(rel_x, rel_y, double=double)
+                self.log(f"🖱️ 后台点击 ({rel_x:.0f},{rel_y:.0f}) 确认键={confirm_key}")
+                if confirm_key:
+                    self.bg_input.click_with_confirm(rel_x, rel_y, confirm_key=confirm_key, double=double)
+                else:
+                    self.bg_input.click(rel_x, rel_y, double=double)
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                self.log(f"❌ 后台点击失败: {e}")
 
         # 兜底：原硬件级点击方式
+        self.log(f"🖱️ 兜底硬件点击 ({x},{y})")
         self.hw_mouse_move(x, y)
         time.sleep(0.2)
         for _ in range(2 if double else 1):
@@ -1026,6 +1067,8 @@ class FH_UltimateBot(ctk.CTk):
             pydirectinput.mouseUp()
             time.sleep(0.1)
         time.sleep(0.1)
+        if confirm_key:
+            self.hw_press(confirm_key, delay=0.1)
 
     def move_to_game_coord(self, x, y):
         """
@@ -3478,7 +3521,7 @@ class FH_UltimateBot(ctk.CTk):
                 self.log("找不到赛事起点,退出跑图。")
                 return False
 
-            self.game_click(pos)
+            self.game_click(pos, confirm_key="enter")
             time.sleep(4.0)
             self.hw_key_down("w")
             self.hw_key_down("up")
