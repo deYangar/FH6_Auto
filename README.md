@@ -42,6 +42,16 @@
 - **原因**：误删 `import win32api`，`win32gui.MAKELONG` 抛出 `AttributeError`，被 `except Exception: pass` 静默吞掉
 - **修复**：恢复 `import win32api`，改回 `win32api.MAKELONG`
 
+### 2026-06-18 修复：startw 点击后不进赛事（多轮后失效）
+- **现象**：跑完几轮后，找到 startw.png 但不进入下一圈
+- **原因**：`PostMessage` 鼠标点击在某些按钮上不被识别为"确认"
+- **修复**：`click_with_confirm()` — 点击后额外按 Enter 确认；每轮开始前 `release_all()` 清空状态
+
+### 2026-06-18 修复：按键状态累积（多轮后菜单卡死）
+- **现象**：跑几轮后菜单上下震荡，新按键被旧按键淹没
+- **原因**：上轮 W/UP 残留未释放，`_repeat_loop` 持续发消息，消息队列堆积
+- **修复**：`release_all()` — 每轮开始前 + 点击前 + 跑图结束时强制释放所有按键，清空 `_pressed_keys` 和 `_repeat_counts`
+
 ---
 
 ## 功能模块
