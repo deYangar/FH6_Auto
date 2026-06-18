@@ -70,6 +70,7 @@ class BackgroundInputManager:
         self._send_key(key, down=True)
         time.sleep(delay)
         self._send_key(key, down=False)
+        time.sleep(0.02)  # 额外缓冲，防止游戏消息队列堆积
 
     def click(self, x, y, double=False):
         """
@@ -89,8 +90,18 @@ class BackgroundInputManager:
         vk = VK_MAP.get(key.lower())
         if vk is None:
             return
-        msg = win32con.WM_KEYDOWN if down else win32con.WM_KEYUP
-        win32gui.PostMessage(self.hwnd, msg, vk, 0)
+        scan = win32api.MapVirtualKey(vk, 0)  # VK -> scan code
+        if down:
+            # WM_KEYDOWN: repeat=1, scan, prev=0, trans=0
+            lParam = (scan << 16) | 1
+            win32gui.PostMessage(self.hwnd, win32con.WM_KEYDOWN, vk, lParam)
+            # 文本输入需要 WM_CHAR（数字/字母直接发 ASCII）
+            if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+                win32gui.PostMessage(self.hwnd, win32con.WM_CHAR, vk, lParam)
+        else:
+            # WM_KEYUP: repeat=1, scan, prev=1, trans=1
+            lParam = (scan << 16) | (1 << 30) | (1 << 31) | 1
+            win32gui.PostMessage(self.hwnd, win32con.WM_KEYUP, vk, lParam)
 
     def _repeat_loop(self):
         """每 50ms 给所有按住的键重发 KEYDOWN，模拟持续按住"""

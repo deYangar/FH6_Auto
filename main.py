@@ -3331,8 +3331,8 @@ class FH_UltimateBot(ctk.CTk):
             if not self.is_running:
                 return False
             if char in DIK_CODES:
-                self.hw_press(char, delay=0.05)
-                time.sleep(0.05)
+                self.hw_press(char, delay=0.08)
+                time.sleep(0.08)
 
         time.sleep(0.4)
         self.hw_press("enter")
