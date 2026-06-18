@@ -1,42 +1,39 @@
-name: Build FH6Auto EXE
+name: Build FH6Auto Backend
 
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - 'main.py'
-      - 'requirements.txt'
-      - 'images/**'
-      - 'assets/**'
-      - 'version.json'
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
           pip install pyinstaller
+          pip install -r requirements.txt
 
       - name: Build with PyInstaller
         run: |
-          python -m PyInstaller -n "FH6Auto" -F -w --uac-admin --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" main.py
+          pyinstaller -n "FH6Auto_Backend" -F -w --uac-admin main.py `
+            --icon=assets/icon.ico `
+            --add-data "images;images" `
+            --add-data "assets;assets"
 
-      - name: Upload EXE artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FH6Auto
-          path: dist/FH6Auto.exe
-          retention-days: 30
+          name: FH6Auto_Backend
+          path: dist/FH6Auto_Backend.exe

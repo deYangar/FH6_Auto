@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # FH6Auto
 
 基于 **Python + 图像识别 + 输入自动化** 的 FH6 视觉自动化工具。  
@@ -219,3 +220,106 @@ pip install pyinstaller
 ## 致谢
 
 感谢原项目 [YOUSTHEONE/FH6Auto](https://github.com/YOUSTHEONE/FH6Auto) 提供的基础实现与思路。
+=======
+# Game Window Tester
+
+测试任意游戏窗口是否支持**后台截图**和**后台输入**，无需窗口在前台。
+
+## 原理
+
+| 功能 | API | 说明 |
+|------|-----|------|
+| 后台截图 | `PrintWindow(hwnd, dc, 3)` | flag=3 即 `PW_RENDERFULLCONTENT`，Win10 1903+，能截 D3D/UE/硬件加速窗口 |
+| 后台输入 | `PostMessage` / `SendMessage` | 点对点发 WM 消息给目标窗口，不抢全局键鼠 |
+
+### 关键发现：WM_MOUSEMOVE 前置
+
+直接发 `WM_LBUTTONDOWN` 大部分游戏不响应。**必须先发 `WM_MOUSEMOVE`**，游戏才会处理后续的鼠标点击消息。键盘 `WM_KEYDOWN` 无此限制。
+
+## 快速开始
+
+```bash
+# 安装依赖
+pip install pywin32 Pillow numpy
+
+# 运行
+python forza_test.py
+
+# 打包为 exe
+build.bat
+```
+
+## 功能
+
+| 功能 | 说明 |
+|------|------|
+| 🔄 窗口选择 | 下拉框列出所有可见窗口，显示 hwnd / 类名 / 客户区尺寸 / DPI |
+| 📸 单次截图 | PrintWindow flag=3 后台截图，显示尺寸和像素均值 |
+| ▶ 实时预览 | 持续截图显示在 UI，可调 1~30 FPS |
+| ⚠ 黑屏检测 | 像素均值 < 5 自动标红警告 |
+| ⌨ 按键测试 | 选按键 → 发送 WM_KEYDOWN/UP |
+| 🖱 鼠标测试 | 坐标输入或直接点预览图，三种发送方式可选 |
+| 🔐 管理员权限 | 启动检测 + 自动提权 |
+| 📐 DPI 感知 | 自动检测目标窗口 DPI 缩放，坐标自动转换 |
+
+## 鼠标点击三种方式
+
+| 方式 | API | 特点 |
+|------|-----|------|
+| **Post** | `PostMessage` | 异步，不阻塞，发完就返回 |
+| **Send** | `SendMessage` | 同步，等窗口处理完才返回 |
+| **Both** | 两者都发 | 间隔 100ms，用于对比测试 |
+
+三种都先发 `WM_MOUSEMOVE` 再发 `WM_LBUTTONDOWN/UP`。
+
+## 适用引擎参考
+
+### 截图 (PrintWindow) ✅ 可用
+
+- Unreal Engine 4/5（窗口模式）
+- Unity DX11/DX12（窗口模式）
+- Source / Source 2
+- CryEngine / RE Engine / id Tech
+- 自研 DX 引擎（魔兽世界、FF14、剑网三）
+- OpenGL 窗口（Minecraft Java 等）
+- Chromium / Electron 应用
+
+### 截图 ❌ 不可用
+
+- 独占全屏（Exclusive Fullscreen）
+- DRM / 硬件叠加层
+- 部分反作弊 Hook GDI
+
+### 输入 (PostMessage + WM_MOUSEMOVE) ✅ 可用
+
+- UE4/5 默认输入系统
+- Unity 旧版 Input（GetKey）
+- 大部分窗口化游戏
+- 网页游戏 / Electron
+
+### 输入 ❌ 不可用
+
+- DirectInput 游戏（老 FPS）
+- Raw Input 游戏（CS2、Valorant、Apex）
+- XInput 纯手柄游戏
+- 带反作弊的竞技游戏（封号风险）
+
+## 约束
+
+- **不能最小化** — 最小化窗口 DC 无像素，PrintWindow 失败
+- **窗口模式** — 独占全屏截图全黑
+- **管理员权限** — 游戏以管理员运行时，工具也必须管理员
+- **反作弊** — 带 EAC/BattlEye/Vanguard 的游戏慎用
+
+## 日志示例
+
+```
+[12:55:01] 已选中: "Forza Horizon 5"
+  hwnd=0x1A2B3C  class=UnrealWindow
+  客户区=1280x720  窗口Rect=(100, 50, 1380, 770)  DPI x1.50
+[12:55:03] ✅ PrintWindow 成功 | 尺寸=1280x720 | 均值=87.34
+   客户区 GetClientRect=1280x720 | 截图尺寸=1280x720
+[12:55:05] 🖱 点击 逻辑(640,360) | 客户区=1280x720 | DPI x1.50 | 方式=PostMessage
+  → PostMessage 物理(960,540) WM_MOUSEMOVE+LBUTTONDOWN/UP
+```
+>>>>>>> 97f527f (feat: add backend capture/input (PrintWindow + PostMessage))
