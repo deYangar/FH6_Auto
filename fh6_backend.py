@@ -16,6 +16,7 @@ import numpy as np
 import win32gui
 import win32ui
 import win32con
+import win32api
 
 PW_RENDERFULLCONTENT = 3
 
@@ -125,7 +126,7 @@ class BackgroundInputManager:
 
     def click(self, x, y, double=False):
         """在窗口客户区坐标 (x, y) 点击"""
-        lp = win32gui.MAKELONG(int(x), int(y))
+        lp = win32api.MAKELONG(int(x), int(y))
         win32gui.PostMessage(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
         time.sleep(0.02)
         for _ in range(2 if double else 1):
