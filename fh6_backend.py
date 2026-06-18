@@ -139,12 +139,22 @@ class BackgroundInputManager:
             sender(self.hwnd, win32con.WM_LBUTTONUP, win32con.MK_LBUTTON, lp)
             time.sleep(0.08)
 
+    def release_all(self):
+        """强制释放所有按住的键，清空状态"""
+        for key in list(self._pressed_keys):
+            self.key_up(key)
+        self._pressed_keys.clear()
+        self._repeat_counts.clear()
+
     def click_with_confirm(self, x, y, confirm_key="enter", double=False):
         """点击 + 发送确认键（用于游戏内需要 Enter/Space 确认的按钮）"""
+        # 点击前先释放所有按键，避免残留按键干扰
+        self.release_all()
+        time.sleep(0.1)
         self.click(x, y, double=double, use_send=False)
-        time.sleep(0.15)
-        self.press(confirm_key, delay=0.1)
-        time.sleep(0.15)
+        time.sleep(0.2)
+        self.press(confirm_key, delay=0.15)
+        time.sleep(0.2)
 
     def _send_key(self, key, down=True, is_repeat=False, send_char=False):
         key = key.lower()

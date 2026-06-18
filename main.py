@@ -3496,6 +3496,10 @@ class FH_UltimateBot(ctk.CTk):
             if not self.is_running:
                 return False
 
+            # 【后台化】每轮开始前强制清状态，防止上轮残留按键干扰
+            if self.bg_input:
+                self.bg_input.release_all()
+
             self.log(f"跑图 {self.race_counter + 1}/{target_count}: 找赛事起点...")
 
             pos = None
@@ -3599,6 +3603,10 @@ class FH_UltimateBot(ctk.CTk):
             # 无论正常结束还是超时,都必须先松开油门和方向
             self.hw_key_up("w")
             self.hw_key_up("up")
+            # 【后台化】强制释放所有残留按键，避免状态累积
+            if self.bg_input:
+                self.bg_input.release_all()
+                self.log("🧹 已强制释放所有按键")
 
             if not self.is_running:
                 return False
