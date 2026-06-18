@@ -1,9 +1,7 @@
 name: Build FH6Auto EXE
 
 on:
-  # 手动触发
   workflow_dispatch:
-  # push 到 main 时自动构建
   push:
     branches: [main]
     paths:
@@ -34,15 +32,7 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          python -m PyInstaller ^
-            -n "FH6Auto" ^
-            -F ^
-            -w ^
-            --uac-admin ^
-            --icon=assets/icon.ico ^
-            --add-data "images;images" ^
-            --add-data "assets;assets" ^
-            main.py
+          python -m PyInstaller -n "FH6Auto" -F -w --uac-admin --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" main.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
