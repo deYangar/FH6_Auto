@@ -14,7 +14,6 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 from collections import deque
-import math
 
 # ─── DPI 感知(必须在创建任何窗口之前调用) ───
 try:
@@ -178,61 +177,6 @@ VK_MAP = {
 }
 
 
-class MouseResetGuard:
-    """防止后台游戏窗口拖拽鼠标光标到窗口中心"""
-
-    def __init__(self, hwnd):
-        self.hwnd = hwnd
-        self.enabled = True
-        self._last_pos = None
-        self._running = False
-        self._thread = None
-
-    def start(self):
-        self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._running = False
-
-    def _get_window_center_screen(self):
-        left, top, right, bot = win32gui.GetClientRect(self.hwnd)
-        cx = left + (right - left) // 2
-        cy = top + (bot - top) // 2
-        return win32gui.ClientToScreen(self.hwnd, (cx, cy))
-
-    def _loop(self):
-        while self._running:
-            if not self.enabled or not win32gui.IsWindow(self.hwnd):
-                time.sleep(0.1)
-                continue
-
-            if win32gui.IsWindowVisible(self.hwnd):
-                self._last_pos = None
-                time.sleep(0.1)
-                continue
-
-            try:
-                current = win32api.GetCursorPos()
-                if self._last_pos is not None:
-                    center = self._get_window_center_screen()
-                    dist_to_center = math.hypot(
-                        current[0] - center[0], current[1] - center[1]
-                    )
-                    jump_dist = math.hypot(
-                        current[0] - self._last_pos[0],
-                        current[1] - self._last_pos[1],
-                    )
-                    if jump_dist > 200 and dist_to_center < 50:
-                        win32api.SetCursorPos(self._last_pos)
-                        time.sleep(1)
-                        continue
-                self._last_pos = current
-                time.sleep(0.002)
-            except Exception:
-                time.sleep(0.1)
-
 
 class App:
     def __init__(self):
@@ -247,7 +191,6 @@ class App:
         self.preview_photo = None  # 保持引用防止 GC
         self.fps_var = tk.IntVar(value=5)
         self.log_lines = deque(maxlen=200)
-        self.mouse_guard = None
 
         self._build_ui()
         self._log("工具已启动,请先选择目标窗口")
@@ -267,13 +210,6 @@ class App:
 
         self.lbl_status = ttk.Label(frm_top, text="状态: 未选择窗口")
         self.lbl_status.pack(side=tk.LEFT, padx=4)
-
-        self.mouse_guard_var = tk.BooleanVar(value=False)
-        self.chk_mouse_guard = ttk.Checkbutton(
-            frm_top, text="🛡 防鼠标跳动", variable=self.mouse_guard_var,
-            command=self._toggle_mouse_guard, state="disabled"
-        )
-        self.chk_mouse_guard.pack(side=tk.RIGHT, padx=8)
 
         # ─── 截图预览区 ───
         frm_preview = ttk.LabelFrame(self.root, text="实时截图预览", padding=4)
@@ -371,34 +307,6 @@ class App:
         self._log(f"已选中: \"{title}\"")
         self._log(f"  hwnd=0x{hwnd:X}  class={cls}")
         self._log(f"  客户区={cw}x{ch}  窗口Rect={wrect}  DPI x{dpi_scale:.2f}")
-
-        # 停止旧守护
-        if self.mouse_guard:
-            self.mouse_guard.stop()
-            self.mouse_guard = None
-
-        self.chk_mouse_guard.config(state="normal")
-
-        # 如果勾选,启动新守护
-        if self.mouse_guard_var.get():
-            self.mouse_guard = MouseResetGuard(self.selected_hwnd)
-            self.mouse_guard.start()
-            self._log("🛡 防鼠标跳动守护已启动")
-
-    def _toggle_mouse_guard(self):
-        if not self.selected_hwnd:
-            return
-        if self.mouse_guard_var.get():
-            if self.mouse_guard:
-                self.mouse_guard.stop()
-            self.mouse_guard = MouseResetGuard(self.selected_hwnd)
-            self.mouse_guard.start()
-            self._log("🛡 防鼠标跳动守护已启动")
-        else:
-            if self.mouse_guard:
-                self.mouse_guard.stop()
-                self.mouse_guard = None
-                self._log("🛡 防鼠标跳动守护已停止")
 
     def _single_screenshot(self):
         if not self.selected_hwnd:
@@ -510,33 +418,25 @@ class App:
 
     def _do_click(self, x, y):
         """根据选择的点击方式发送鼠标点击"""
-        # 临时暂停防跳动守护,避免把脚本自己发的鼠标移动误判为游戏拖拽
-        if self.mouse_guard:
-            self.mouse_guard.enabled = False
+        method = self.click_method.get()
+        dpi_scale = self._get_dpi_scale(self.selected_hwnd)
+        left, top, right, bot = win32gui.GetClientRect(self.selected_hwnd)
+        cw, ch = right - left, bot - top
 
-        try:
-            method = self.click_method.get()
-            dpi_scale = self._get_dpi_scale(self.selected_hwnd)
-            left, top, right, bot = win32gui.GetClientRect(self.selected_hwnd)
-            cw, ch = right - left, bot - top
+        self._log(f"🖱 点击 逻辑({x},{y}) | 客户区={cw}x{ch} | DPI x{dpi_scale:.2f} | 方式={method}")
 
-            self._log(f"🖱 点击 逻辑({x},{y}) | 客户区={cw}x{ch} | DPI x{dpi_scale:.2f} | 方式={method}")
-
-            if method == "PostMessage":
-                px, py = post_message_click(self.selected_hwnd, x, y, dpi_scale)
-                self._log(f"  → PostMessage 物理({px},{py}) WM_MOUSEMOVE+LBUTTONDOWN/UP")
-            elif method == "SendMessage":
-                px, py = send_message_click(self.selected_hwnd, x, y, dpi_scale)
-                self._log(f"  → SendMessage 物理({px},{py}) WM_MOUSEMOVE+LBUTTONDOWN/UP")
-            else:  # Both
-                px1, py1 = post_message_click(self.selected_hwnd, x, y, dpi_scale)
-                self._log(f"  → PostMessage 物理({px1},{py1})")
-                time.sleep(0.1)
-                px2, py2 = send_message_click(self.selected_hwnd, x, y, dpi_scale)
-                self._log(f"  → SendMessage 物理({px2},{py2})")
-        finally:
-            if self.mouse_guard:
-                self.mouse_guard.enabled = True
+        if method == "PostMessage":
+            px, py = post_message_click(self.selected_hwnd, x, y, dpi_scale)
+            self._log(f"  → PostMessage 物理({px},{py}) WM_MOUSEMOVE+LBUTTONDOWN/UP")
+        elif method == "SendMessage":
+            px, py = send_message_click(self.selected_hwnd, x, y, dpi_scale)
+            self._log(f"  → SendMessage 物理({px},{py}) WM_MOUSEMOVE+LBUTTONDOWN/UP")
+        else:  # Both
+            px1, py1 = post_message_click(self.selected_hwnd, x, y, dpi_scale)
+            self._log(f"  → PostMessage 物理({px1},{py1})")
+            time.sleep(0.1)
+            px2, py2 = send_message_click(self.selected_hwnd, x, y, dpi_scale)
+            self._log(f"  → SendMessage 物理({px2},{py2})")
 
     def _on_canvas_click(self, event):
         """点击预览图 → 换算成窗口客户区坐标 → 发送后台点击"""

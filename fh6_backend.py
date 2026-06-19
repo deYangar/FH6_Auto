@@ -124,20 +124,33 @@ class BackgroundInputManager:
         self._send_key(key, down=False)
         time.sleep(0.02)
 
-    def click(self, x, y, double=False, use_send=False):
+    def click(self, x, y, double=False, use_send=False, clicks=None, hold=0.08, gap=0.08):
         """在窗口客户区坐标 (x, y) 点击
         use_send=True 时用 SendMessage（同步，更可靠但可能阻塞）
+        clicks/hold/gap 用于车库卡片等需要更长按压/多次点击的界面。
         """
         lp = win32api.MAKELONG(int(x), int(y))
         sender = win32gui.SendMessage if use_send else win32gui.PostMessage
+        click_count = clicks if clicks is not None else (2 if double else 1)
 
         sender(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
         time.sleep(0.05)
-        for _ in range(2 if double else 1):
+        for _ in range(click_count):
+            sender(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
+            time.sleep(0.03)
             sender(self.hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lp)
-            time.sleep(0.08)
-            sender(self.hwnd, win32con.WM_LBUTTONUP, win32con.MK_LBUTTON, lp)
-            time.sleep(0.08)
+            time.sleep(hold)
+            # WM_LBUTTONUP 时 wParam 应为 0。继续带 MK_LBUTTON 会让部分游戏 UI 只表现为 hover/press，不触发真正 click release。
+            sender(self.hwnd, win32con.WM_LBUTTONUP, 0, lp)
+            time.sleep(gap)
+
+    def mouse_move(self, x, y, use_send=False):
+        """后台移动游戏内鼠标悬停点到客户区坐标 (x, y)。
+        用于等价恢复原版点击后移开鼠标、防止悬浮提示遮挡识图的行为。
+        """
+        lp = win32api.MAKELONG(int(x), int(y))
+        sender = win32gui.SendMessage if use_send else win32gui.PostMessage
+        sender(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
 
     def release_all(self):
         """强制释放所有按住的键，清空状态"""

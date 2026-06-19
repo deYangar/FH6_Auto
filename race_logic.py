@@ -1,0 +1,544 @@
+import time
+import os
+import json
+import threading
+import cv2
+import numpy as np
+from constants import DIK_CODES
+from config import APP_DIR
+
+
+class RaceMixin:
+    """循环跑图业务逻辑 + F3 测试找图"""
+
+    def _save_race_car_debug(self, stage, note="", extra=None):
+        """保存循环跑图选车阶段的组合识别调试记录。"""
+        if hasattr(self, "is_debug_screenshots_enabled") and not self.is_debug_screenshots_enabled():
+            return
+        try:
+            debug_root = os.path.join(APP_DIR, "debug_race_car_select")
+            os.makedirs(debug_root, exist_ok=True)
+            stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
+            out_dir = os.path.join(debug_root, f"{stamp}_{stage}")
+            os.makedirs(out_dir, exist_ok=True)
+
+            img = self.capture_region(self.regions["全界面"])
+            meta = {
+                "stage": stage,
+                "note": note,
+                "extra": extra or {},
+                "best": {},
+            }
+            annotated = img.copy() if img is not None else None
+
+            if img is not None:
+                gx, gy, _, _ = self.regions["全界面"]
+                for name, color in [("skillcar.png", (0, 0, 255)), ("liketag.png", (0, 255, 0))]:
+                    best = None
+                    for scale in self.get_scales_to_try(fast_mode=False):
+                        tpl, _ = self.get_scaled_template(name, scale)
+                        if tpl is None or tpl.shape[0] > img.shape[0] or tpl.shape[1] > img.shape[1]:
+                            continue
+                        res = cv2.matchTemplate(img, tpl, cv2.TM_CCOEFF_NORMED)
+                        _, score, _, loc = cv2.minMaxLoc(res)
+                        if best is None or score > best["score"]:
+                            best = {
+                                "score": float(score),
+                                "scale": float(scale),
+                                "x": int(loc[0]),
+                                "y": int(loc[1]),
+                                "w": int(tpl.shape[1]),
+                                "h": int(tpl.shape[0]),
+                            }
+                    meta["best"][name] = best
+                    if best:
+                        cv2.rectangle(
+                            annotated,
+                            (best["x"], best["y"]),
+                            (best["x"] + best["w"], best["y"] + best["h"]),
+                            color,
+                            3,
+                        )
+                        cv2.putText(
+                            annotated,
+                            f"{name} {best['score']:.3f} s={best['scale']:.3f}",
+                            (max(5, best["x"]), max(25, best["y"] - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.65,
+                            color,
+                            2,
+                        )
+
+                # 在最佳 skillcar 周围单独评估 liketag，记录“同一车卡附近有没有标签”。
+                # 注意：全屏最佳 liketag 可能落在 BRZ 等其它车上，不能作为组合依据。
+                best_main = meta["best"].get("skillcar.png")
+                if best_main:
+                    best_like_near = None
+                    x, y, w, h = best_main["x"], best_main["y"], best_main["w"], best_main["h"]
+                    pad = 12
+                    rx1 = max(0, y - pad)
+                    ry1 = max(0, x - pad)
+                    rx2 = min(img.shape[0], y + h + pad)
+                    ry2 = min(img.shape[1], x + w + pad)
+                    roi = img[rx1:rx2, ry1:ry2]
+                    for scale in self.get_scales_to_try(fast_mode=False):
+                        tpl, _ = self.get_scaled_template("liketag.png", scale)
+                        if tpl is None or tpl.shape[0] > roi.shape[0] or tpl.shape[1] > roi.shape[1]:
+                            continue
+                        res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+                        _, score, _, loc = cv2.minMaxLoc(res)
+                        if best_like_near is None or score > best_like_near["score"]:
+                            best_like_near = {
+                                "score": float(score),
+                                "scale": float(scale),
+                                "x": int(loc[0]),
+                                "y": int(loc[1]),
+                                "abs_x": int(ry1 + loc[0]),
+                                "abs_y": int(rx1 + loc[1]),
+                                "w": int(tpl.shape[1]),
+                                "h": int(tpl.shape[0]),
+                            }
+                    meta["best"]["liketag_near_skillcar"] = best_like_near
+                    if best_like_near:
+                        ax, ay = best_like_near["abs_x"], best_like_near["abs_y"]
+                        aw, ah = best_like_near["w"], best_like_near["h"]
+                        cv2.rectangle(annotated, (ax, ay), (ax + aw, ay + ah), (0, 255, 255), 3)
+                        cv2.putText(
+                            annotated,
+                            f"liketag near {best_like_near['score']:.3f} s={best_like_near['scale']:.3f}",
+                            (max(5, ax), min(img.shape[0] - 10, ay + ah + 24)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.65,
+                            (0, 255, 255),
+                            2,
+                        )
+
+                cv2.imwrite(os.path.join(out_dir, "screen_annotated.png"), annotated)
+                cv2.imwrite(os.path.join(out_dir, "screen_raw.png"), img)
+
+            with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            self.log(f"[RaceCarDebug] {stage} 已保存: {out_dir}")
+        except Exception as e:
+            self.log(f"[RaceCarDebug] 保存失败({stage}): {e}")
+
+    def start_test_find_image(self):
+        """F3测试:直接反复调用原 find_image_with_element_multi(),最多找12个目标,只移动鼠标不点击"""
+        if self.is_running:
+            self.log("已有任务正在运行,无法执行 F3 测试找图。")
+            return
+
+        self.is_running = True
+        self.is_paused = False
+        self.save_config()
+
+        self.reset_run_stats()
+        self.update_running_state("running")
+        self.update_running_ui("F3测图", 0, 12)
+        self.ui_call(self.lbl_runtime_loop.configure, text="测试模式")
+        self.update_timer()
+
+        self.log("====== 开始 F3 测试原二阶找图 ======")
+
+        def test_runner():
+            try:
+                if not self.check_and_focus_game():
+                    self.log("未能聚焦游戏窗口,测试结束。")
+                    return
+
+                found_positions = []
+                mask_areas = []
+
+                for i in range(15):
+                    if not self.is_running:
+                        return
+                    self.check_pause()
+
+                    pos = self.find_image_with_element_multi(
+                        "newCC.png",
+                        "newcartag.png",
+                        region=self.regions["全界面"],
+                        main_threshold=0.70,
+                        like_threshold=0.70,
+                        final_threshold=0.70,
+                        fast_mode=True,
+                        mask_areas=mask_areas
+                    )
+
+                    if not pos:
+                        self.log(f"第 {i + 1} 次查找:未找到新的目标,测试结束。")
+                        break
+
+                    x, y = int(pos[0]), int(pos[1])
+
+                    duplicated = False
+                    for old_x, old_y in found_positions:
+                        if abs(x - old_x) <= 80 and abs(y - old_y) <= 80:
+                            duplicated = True
+                            break
+
+                    region_x, region_y, _, _ = self.regions["全界面"]
+                    local_x = x - region_x
+                    local_y = y - region_y
+
+                    block_w = 210
+                    block_h = 120
+                    mask_areas.append((
+                        local_x - block_w // 2,
+                        local_y - block_h // 2,
+                        local_x + block_w // 2,
+                        local_y + block_h // 2
+                    ))
+
+                    if duplicated:
+                        self.log(f"F3测试:识别到重复目标 ({x}, {y}),已扩大遮罩,继续寻找。")
+                        continue
+
+                    found_positions.append((x, y))
+                    self.update_running_ui("F3测试找图", len(found_positions), 12)
+                    self.log(f"F3测试:找到第 {len(found_positions)} 个目标 -> ({x}, {y})")
+                    self.hw_mouse_move(x, y)
+                    time.sleep(0.5)
+
+                self.log(f"F3测试完成,共找到 {len(found_positions)} 个目标。")
+
+            except Exception as e:
+                self.log(f"F3测试异常: {e}")
+            finally:
+                self.stop_all()
+
+        self.current_thread = threading.Thread(target=test_runner, daemon=True)
+        self.current_thread.start()
+    # ==========================================
+    # --- 模块:跑图前置与循环跑图 ---
+    # ==========================================
+    def logic_race(self, target_count):
+        if self.race_counter >= target_count:
+            return True
+
+        self.update_running_ui("循环跑图", self.race_counter, target_count)
+
+        self.log("准备验证/进入菜单...")
+        if not self.enter_menu():
+            return False
+
+        self.log("切换到创意中心...")
+        for _ in range(4):
+            self.hw_press("pagedown", delay=0.15)
+            time.sleep(0.3)
+
+        time.sleep(0.8)
+
+
+        pos_el = self.wait_for_image_gray(
+            "eventlab.png",
+            region=self.regions["全界面"],
+            threshold=0.7,
+            timeout=5,
+            interval=0.25,
+            fast_mode=True
+        )
+
+        if not pos_el:
+            self.log("未找到 eventlab")
+            return False
+
+        self.game_click(pos_el)
+        time.sleep(1.2)
+
+        pos_yg = self.wait_for_image_gray(
+            "playenent.png",
+            region=self.regions["中间"],
+            threshold=0.75,
+            timeout=40,
+            interval=0.3,
+            fast_mode=True
+        )
+        if not pos_yg:
+            self.log("未找到游玩赛事")
+            return False
+
+        self.game_click(pos_yg)
+        time.sleep(1.5)
+
+        self.hw_press("backspace")
+        time.sleep(0.8)
+        self.hw_press("up")
+        time.sleep(0.4)
+        self.hw_press("enter")
+        time.sleep(0.8)
+
+        code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
+        for char in code_text:
+            if not self.is_running:
+                return False
+            if char in DIK_CODES:
+                self.hw_press(char, delay=0.08)
+                time.sleep(0.08)
+
+        time.sleep(0.4)
+        self.hw_press("enter")
+        time.sleep(0.8)
+        self.hw_press("down")
+        time.sleep(0.3)
+        self.hw_press("enter")
+        time.sleep(1.5)
+
+        pos_ck = self.wait_for_image_gray(
+            "VEI.png",
+            region=self.regions["下"],
+            threshold=0.75,
+            timeout=20,
+            interval=1.0,
+            fast_mode=True
+        )
+        if not pos_ck:
+            self.log("链接超时")
+            return False
+
+        self.hw_press("enter")
+        time.sleep(2.0)
+        self.hw_press("enter")
+        time.sleep(2.0)
+
+        pos_target = self.wait_for_image_with_element_multi(
+            "skillcar.png",
+            "liketag.png",
+            region=self.regions["全界面"],
+            fast_mode=False,
+            main_threshold=0.75,
+            like_threshold=0.7,
+            final_threshold=0.7,
+            timeout=4,
+            interval=0.25
+        )
+        if not pos_target:
+            self.log("组合识别未命中：未同时确认 skillcar.png + liketag.png，禁止使用单图兜底，重新选品牌...")
+            self._save_race_car_debug(
+                "combo_miss_before_brand",
+                note="初次组合识别未命中，保存 skillcar/liketag 最佳匹配情况",
+                extra={"main": "skillcar.png", "sub": "liketag.png"}
+            )
+
+        if not pos_target:
+            self.log("未找到带 liketag 的目标车辆,重新选品牌...")
+            self.hw_press("backspace")
+            time.sleep(1.2)
+
+            found_brand = False
+            for _ in range(3):
+                if not self.is_running:
+                    return False
+
+                pos_brand = self.wait_for_image_gray("skillcarbrand.png", region=self.regions["全界面"], threshold=0.8, timeout=1.2, interval=0.2, fast_mode=True)
+                if pos_brand:
+                    self.game_click(pos_brand)
+                    time.sleep(1.2)
+                    found_brand = True
+                    break
+
+                self.hw_press("up")
+                time.sleep(0.4)
+
+            if not found_brand:
+                self.log("三次尝试未找到刷图车辆品牌。")
+                return False
+
+            for _ in range(20):
+                if not self.is_running:
+                    return False
+
+                pos_target = self.wait_for_image_with_element_multi(
+                    "skillcar.png",
+                    "liketag.png",
+                    region=self.regions["全界面"],
+                    main_threshold=0.75,
+                    like_threshold=0.7,
+                    final_threshold=0.7,
+                    timeout=4,
+                    interval=0.25,
+                    fast_mode=False
+                )
+                if not pos_target:
+                    self.log("组合识别未命中：未同时确认 skillcar.png + liketag.png，本页跳过，禁止单图兜底。")
+                    self._save_race_car_debug(
+                        "combo_miss_page",
+                        note="翻页/品牌选择后组合识别未命中，保存本页 skillcar/liketag 最佳匹配情况",
+                        extra={"main": "skillcar.png", "sub": "liketag.png"}
+                    )
+                if pos_target:
+                    break
+
+                for _ in range(4):
+                    self.hw_press("right", delay=0.08)
+                    time.sleep(0.08)
+                time.sleep(0.4)
+
+        if not pos_target:
+            self.log("翻页未能找到带有 liketag 的刷图车辆!")
+            return False
+
+        self.game_click(pos_target)
+        time.sleep(0.5)
+        self.hw_press("enter")
+        time.sleep(4.0)
+
+        self.log("前置完成,开始循环跑图!")
+
+        while self.race_counter < target_count:
+            if not self.is_running:
+                return False
+
+            # 【后台化】每轮开始前强制清状态，防止上轮残留按键干扰
+            if self.bg_input:
+                self.bg_input.release_all()
+
+            self.log(f"跑图 {self.race_counter + 1}/{target_count}: 找赛事起点...")
+
+            pos = None
+            for _ in range(120):
+                if not self.is_running:
+                    return False
+
+                pos = self.wait_for_any_image_gray(
+                    ["start.png", "startw.png"],
+                    region=self.regions["左下"],
+                    threshold=0.75,
+                    timeout=0.7,
+                    interval=0.2,
+                    fast_mode=True
+                )
+                if pos:
+                    break
+
+                self.hw_press("down")
+                time.sleep(0.25)
+
+            if not pos:
+                self.log("找不到赛事起点,退出跑图。")
+                return False
+
+            self.game_click(pos, confirm_key="enter")
+            time.sleep(4.0)
+            self.hw_key_down("w")
+            self.hw_key_down("up")
+
+            # 初始化各类计时器
+            race_start_time = time.time()  # 新增:记录跑图发车时间
+            last_like_chk = time.time()
+            last_chk = 0
+            finished = False
+            timeout_triggered = False      # 新增:标记是否触发了120秒超时
+
+            driving_keys_held = True # <--- 【新增】标记油门状态
+            try:
+                race_timeout = max(60, int(self.config.get("race_timeout", 300)))
+            except Exception:
+                race_timeout = 300
+
+            while self.is_running:
+                # ====== 【新增】跑图专用暂停处理逻辑 ======
+                if self.is_paused:
+                    if driving_keys_held: # 刚进入暂停,松开油门
+                        self.hw_key_up("w")
+                        self.hw_key_up("up")
+                        driving_keys_held = False
+                    self.check_pause() # 阻塞在此处
+                    # 从暂停中恢复,如果还没跑完,重新按下油门
+                    if self.is_running:
+                        self.hw_key_down("w")
+                        self.hw_key_down("up")
+                        driving_keys_held = True
+
+                    # 避免恢复瞬间触发超时,重置计时器
+                    race_start_time = time.time()
+                    last_like_chk = time.time()
+                    last_chk = time.time()
+                    continue
+                # =========================================
+                now = time.time()
+
+                # 【新增逻辑】:超时防卡死检测
+                if now - race_start_time > race_timeout:
+                    self.log(f"跑图超时(已超过{race_timeout}秒)!触发强制重开赛事逻辑...")
+                    timeout_triggered = True
+                    break
+
+                # 每隔3秒处理一次跑图中的特殊界面/异常
+                if now - last_like_chk >= 3.0:
+                    vram_result = self.check_vramne_during_race()
+                    if vram_result is True:
+                        self.log("VRAM恢复完成,结束当前跑图流程,交给外层重新恢复。")
+                        return False
+                    elif vram_result is False:
+                        self.log("VRAM恢复失败。")
+                        return False
+                    pos_like = self.find_any_image_gray(
+                        ["likeauthor.png", "dislikeauthor.png"],
+                        region=self.regions["中间"],
+                        threshold=0.70
+                    )
+                    if pos_like:
+                        self.log("识别到点赞作界面,执行回车确认!")
+                        self.hw_press("enter")
+                    last_like_chk = now
+
+                # 每1秒检测一次重新开始(正常完赛)
+                if now - last_chk >= 1.0:
+                    found_restart = self.find_image_gray("restart.png", region=self.regions["下"], threshold=0.75, fast_mode=True)
+                    if found_restart:
+                        finished = True
+                        break
+                    last_chk = now
+
+                time.sleep(0.3)
+
+            # 无论正常结束还是超时,都必须先松开油门和方向
+            self.hw_key_up("w")
+            self.hw_key_up("up")
+            # 【后台化】强制释放所有残留按键，避免状态累积
+            if self.bg_input:
+                self.bg_input.release_all()
+                self.log("🧹 已强制释放所有按键")
+
+            if not self.is_running:
+                return False
+
+            # ====== 【新增】:执行超时重置操作 ======
+            if timeout_triggered:
+                time.sleep(0.5)
+                self.hw_press("esc")
+                time.sleep(1.5)  # 等待菜单动画加载
+
+                # 寻找并点击 restarta.png
+                pos_restarta = self.wait_for_image_gray("restarta.png", region=self.regions["全界面"], threshold=0.70, timeout=4.0, interval=0.3, fast_mode=True)
+                if pos_restarta:
+                    self.log("找到 restarta.png,点击重开赛事...")
+                    self.game_click(pos_restarta)
+                    time.sleep(1.0)
+                    self.hw_press("enter")  # 地平线重开赛事通常有确认弹窗,按一次回车确认
+                    time.sleep(4.0)         # 等待黑屏重加载动画
+                else:
+                    self.log("未找到 restarta.png,尝试直接继续...")
+
+                # 【关键】:直接跳过下方的结算流程,回到最外层 while 重新找 start.png(并且本次不计入 race_counter)
+                continue
+            # ========================================
+
+            if not finished:
+                return False
+
+            if self.race_counter == target_count - 1:
+                self.hw_press("enter")
+                time.sleep(2.0)
+            else:
+                self.hw_press("x")
+                time.sleep(0.8)
+                self.hw_press("enter")
+                time.sleep(2.0)
+
+            self.race_counter += 1
+            self.update_running_ui("循环跑图", self.race_counter, target_count)
+            self.log(f"循环跑图计数 +1: {self.race_counter}/{target_count}" )
+
+        return True

@@ -69,10 +69,28 @@
 
 ### 超级抽奖
 - 自动点技能路径
-- 三段验证选车（全新标签 → B600 等级 → 目标车辆卡片）
+- 严格选车校验：全新标签 → B600 等级 → 目标车辆卡片 → 上车前安全校验
+- 上车后等待菜单稳定，再进入“升级与调校 / 车辆专精”
 
 ### 串联与循环
 跑图 → 买车 → 超级抽奖 → 下一轮
+
+### 调试截图开关
+- 界面提供“调试截图”勾选框，状态保存到 `config.json` 的 `debug_screenshots` 字段。
+- 默认关闭，避免长期运行产生大量文件。
+- 开启后才会生成：
+  - `debug_race_car_select/`
+  - `debug_strict_car/`
+  - `debug_car_select/`
+  - `debug_upgrade_flow/`
+
+### Focus Hook 开关
+- 界面提供“Hook游戏窗口使其始终为焦点”勾选框，状态保存到 `config.json` 的 `focus_hook_enabled` 字段。
+- 勾选后：
+  - 软件启动后会自动尝试 Hook 已打开的游戏窗口；
+  - 每次检测到游戏窗口时会确认 Hook 是否已注入；
+  - 关闭软件时自动卸载 Hook。
+- Hook DLL 来自 `focus_hook` 项目：`assets/focus_hook_x64.dll`、`assets/focus_hook_x86.dll`。
 
 ---
 
@@ -91,18 +109,21 @@ python main.py
 
 ---
 
-## 打包
+## 本地打包
 
-```powershell
-# 本地打包
-python -m PyInstaller -n "FH6Auto_Backend" -F -w --uac-admin main.py `
-  --icon=assets/icon.ico `
-  --add-data "images;images" `
-  --add-data "assets;assets"
+本项目使用本地打包，不依赖 GitHub Actions：
 
-# 或使用 GitHub Actions（每次 push 自动编译）
-# 见 .github/workflows/build.yml
+```bat
+build.bat
 ```
+
+输出文件：
+
+```text
+dist\FH6Auto.exe
+```
+
+`assets/` 与 `images/` 会随 exe 一起打包。
 
 ---
 
@@ -111,7 +132,6 @@ python -m PyInstaller -n "FH6Auto_Backend" -F -w --uac-admin main.py `
 - **不能最小化** — 最小化窗口 DC 无像素，PrintWindow 失败
 - **窗口模式** — 独占全屏截图全黑
 - **管理员权限** — 游戏以管理员运行时，工具也必须管理员
-- **反作弊** — 带 EAC/BattlEye/Vanguard 的游戏输入可能被过滤
 
 ---
 
@@ -126,4 +146,7 @@ python -m PyInstaller -n "FH6Auto_Backend" -F -w --uac-admin main.py `
 ## 致谢
 
 感谢原项目 [YOUSTHEONE/FH6Auto](https://github.com/YOUSTHEONE/FH6Auto) 提供的基础实现与思路。  
-本版本在其基础上增加了后台截图/输入能力。
+感谢二改项目 [AxeroYF/FH6](https://github.com/AxeroYF/FH6) 提供的二改实现与思路。
+感谢 [lazydog28/mc_auto_boss](https://github.com/lazydog28/mc_auto_boss) 提供的后台实现和思路。
+
+本版本在二改项目的基础上增加了后台截图/输入能力。
