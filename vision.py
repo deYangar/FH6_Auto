@@ -15,77 +15,67 @@ from constants import MATCH_THRESHOLD
 class VisionMixin:
     """图像识别引擎：模板匹配、边缘检测、多尺度适配"""
 
-    def _save_strict_car_debug(
-        self,
-        screen_bgr,
-        search_bgr,
-        main_tpl,
-        card_x,
-        card_y,
-        card_w,
-        card_h,
-        tag_x,
-        tag_y,
-        tag_w,
-        tag_h,
-        class_x,
-        class_y,
-        class_w,
-        class_h,
-        search_x1,
-        search_y1,
-        meta,
-    ):
-        """保存超级抽奖严格选车调试材料。"""
+    def _save_strict_car_simple(self, stage, screen_bgr=None, meta=None, anno=None):
+        """轻量版严格识别失败调试截图：存原图 + 标注图 + meta，用于跳过复杂几何信息的场景。
+        anno: dict，可含以下字段，用于在标注图上画识别框：
+          - tag_boxes: [(x, y, w, h, score), ...]   全新标签候选（黄框）
+          - class_boxes: [(x, y, w, h, score), ...] B600 等级候选（青框）
+          - card_boxes: [(x, y, w, h, score), ...]  车型主模板候选（绿框）
+          - max_tag_loc: (x, y, w, h, score)         整幅最高全新分数点（紫框）
+          - title: 额外额额外额额顶部标题文本
+        """
         if hasattr(self, "is_debug_screenshots_enabled") and not self.is_debug_screenshots_enabled():
             return
         try:
+            import os, time, json
+            import cv2
+            from config import APP_DIR
             debug_root = os.path.join(APP_DIR, "debug_strict_car")
             os.makedirs(debug_root, exist_ok=True)
             stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
-            score = float(meta.get("near_score", 0.0))
-            out_dir = os.path.join(debug_root, f"{stamp}_score_{score:.3f}")
+            out_dir = os.path.join(debug_root, f"{stamp}_{stage}")
             os.makedirs(out_dir, exist_ok=True)
+            if screen_bgr is None:
+                screen_bgr = self.capture_region(self.regions["全界面"])
+            cv2.imwrite(os.path.join(out_dir, "screen_raw.png"), screen_bgr)
 
             annotated = screen_bgr.copy()
-            # 红框：目标车模板实际匹配出的车卡位置
-            cv2.rectangle(annotated, (card_x, card_y), (card_x + card_w, card_y + card_h), (0, 0, 255), 3)
-            # 绿框：全新标签
-            cv2.rectangle(annotated, (tag_x, tag_y), (tag_x + tag_w, tag_y + tag_h), (0, 255, 0), 2)
-            # 蓝框：B600 等级
-            cv2.rectangle(annotated, (class_x, class_y), (class_x + class_w, class_y + class_h), (255, 0, 0), 2)
-            # 黄框：目标车搜索区域
-            cv2.rectangle(
-                annotated,
-                (search_x1, search_y1),
-                (search_x1 + search_bgr.shape[1], search_y1 + search_bgr.shape[0]),
-                (0, 255, 255),
-                2,
-            )
-            cv2.putText(
-                annotated,
-                f"target={score:.3f} gray={float(meta.get('gray_score', 0.0)):.3f} edge={float(meta.get('edge_score', 0.0)):.3f} new={float(meta.get('tag_score', 0.0)):.3f} b600={float(meta.get('class_score', 0.0)):.3f}",
-                (max(5, card_x), max(25, card_y - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 0, 255),
-                2,
-            )
-
-            card_crop = screen_bgr[
-                max(0, card_y):min(screen_bgr.shape[0], card_y + card_h),
-                max(0, card_x):min(screen_bgr.shape[1], card_x + card_w),
-            ]
-
-            cv2.imwrite(os.path.join(out_dir, "01_full_annotated.png"), annotated)
-            cv2.imwrite(os.path.join(out_dir, "02_candidate_card_crop.png"), card_crop)
-            cv2.imwrite(os.path.join(out_dir, "03_target_search_area.png"), search_bgr)
-            cv2.imwrite(os.path.join(out_dir, "04_template_newCC.png"), main_tpl)
+            anno = anno or {}
+            # 黄框：全新标签候选
+            for box in anno.get("tag_boxes", []) or []:
+                x, y, w, h, score = box
+                cv2.rectangle(annotated, (int(x), int(y)), (int(x + w), int(y + h)), (0, 255, 255), 2)
+                cv2.putText(annotated, f"NEW:{score:.2f}", (int(x), max(0, int(y) - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+            # 青框：B600 等级候选
+            for box in anno.get("class_boxes", []) or []:
+                x, y, w, h, score = box
+                cv2.rectangle(annotated, (int(x), int(y)), (int(x + w), int(y + h)), (255, 255, 0), 2)
+                cv2.putText(annotated, f"B600:{score:.2f}", (int(x), max(0, int(y) - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+            # 绿框：主车型模板候选
+            for box in anno.get("card_boxes", []) or []:
+                x, y, w, h, score = box
+                cv2.rectangle(annotated, (int(x), int(y)), (int(x + w), int(y + h)), (0, 255, 0), 2)
+                cv2.putText(annotated, f"CAR:{score:.2f}", (int(x), max(0, int(y) - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+            # 紫框：整幅最高全新匹配点（即使低于阈值也画）
+            mt = anno.get("max_tag_loc")
+            if mt:
+                x, y, w, h, score = mt
+                cv2.rectangle(annotated, (int(x), int(y)), (int(x + w), int(y + h)), (255, 0, 255), 2)
+                cv2.putText(annotated, f"MAX_NEW:{score:.2f}", (int(x), max(0, int(y) - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2)
+            # 额外标题
+            title = anno.get("title")
+            if title:
+                cv2.putText(annotated, str(title), (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.imwrite(os.path.join(out_dir, "screen_annotated.png"), annotated)
             with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-            self.log(f"[StrictCarDebug] 已保存候选调试图: {out_dir}")
-        except Exception as e:
-            self.log(f"[StrictCarDebug] 保存失败: {e}")
+                json.dump(meta or {}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def load_template(self, template_path):
         actual_path = get_img_path(template_path)
@@ -821,63 +811,6 @@ class VisionMixin:
                 return pos
             time.sleep(interval)
         return None
-    def wait_for_image_with_element_stable(
-        self,
-        main_path,
-        sub_path,
-        region=None,
-        main_threshold=0.60,
-        verify_threshold=0.72,
-        sub_threshold=0.70,
-        max_candidates=15,
-        timeout=3,
-        interval=0.2
-    ):
-        start = time.time()
-        while self.is_running and time.time() - start < timeout:
-            pos = self.find_image_with_element_stable(
-                main_path=main_path,
-                sub_path=sub_path,
-                region=region,
-                main_threshold=main_threshold,
-                verify_threshold=verify_threshold,
-                sub_threshold=sub_threshold,
-                max_candidates=max_candidates
-            )
-            if pos:
-                return pos
-            time.sleep(interval)
-        return None
-    def wait_for_image_with_element_fast(
-        self,
-        main_path,
-        sub_path,
-        region=None,
-        threshold=0.70,
-        sub_threshold=0.70,
-        timeout=4,
-        interval=0.25
-    ):
-        start = time.time()
-
-        while self.is_running and time.time() - start < timeout:
-            pos = self.find_image_with_element_fast(
-                main_path=main_path,
-                sub_path=sub_path,
-                region=region,
-                threshold=threshold,
-                sub_threshold=sub_threshold
-            )
-            if pos:
-                return pos
-
-            time.sleep(interval)
-
-        return None
-
-    # ==========================================
-    # --- 【终极安全锁 V5.1】:排他 + 右下角调校精准狙击 + 强制从左到右 ---
-    # ==========================================
     def find_image_ultimate_safe(self, main_path, anti_path, region=None, main_threshold=0.80, anti_threshold=0.65, mask_areas=None):
         if not self.is_running: return None
         try:
@@ -991,104 +924,12 @@ class VisionMixin:
             time.sleep(interval)
         return None
 
-    def find_new_tag_by_color(self, screen_bgr, tag_tpl, scale):
-        try:
-            h_s, w_s = screen_bgr.shape[:2]
-            hsv = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2HSV)
-            # "全新"标签是高亮黄色,先用颜色把候选范围从整屏压到很小。
-            mask = cv2.inRange(hsv, np.array([22, 80, 160]), np.array([42, 255, 255]))
-            kernel = np.ones((3, 3), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            candidates = []
-            tag_h, tag_w = tag_tpl.shape[:2]
-            card_w = max(180, int(267 * scale))
-            card_h = max(130, int(198 * scale))
-
-            for cnt in contours:
-                x, y, w, h = cv2.boundingRect(cnt)
-                area = w * h
-                if area < 80 or area > 6000:
-                    continue
-                if w < 12 or h < 8 or w > 90 or h > 70:
-                    continue
-                if w / max(h, 1) < 0.6:
-                    continue
-
-                pad = max(8, int(12 * scale))
-                x1 = max(0, x - pad)
-                y1 = max(0, y - pad)
-                x2 = min(w_s, x + w + pad)
-                y2 = min(h_s, y + h + pad)
-                tag_roi = screen_bgr[y1:y2, x1:x2]
-                tag_score = self.match_template_score(tag_roi, tag_tpl)
-                if tag_score < 0.52:
-                    continue
-
-                card_x = int((x + w / 2) - card_w * 0.78)
-                card_y = int((y + h / 2) - card_h * 0.78)
-                card_x = max(0, min(card_x, w_s - card_w))
-                card_y = max(0, min(card_y, h_s - card_h))
-                center_x = card_x + card_w // 2
-                center_y = card_y + card_h // 2
-
-                candidates.append((tag_score, card_x, card_y, card_w, card_h, center_x, center_y, x, y, w, h))
-
-            if not candidates:
-                return []
-
-            candidates.sort(key=lambda item: (-item[0], item[8], item[7]))
-            return candidates
-        except Exception as e:
-            self.log(f"find_new_tag_by_color 异常: {e}")
-            return []
-
-    def validate_new_tag_grid_fallback(self, screen_bgr, tx, ty, tw, th):
-        try:
-            h_s, w_s = screen_bgr.shape[:2]
-            if tx < int(w_s * 0.20) or ty < int(h_s * 0.18) or ty > int(h_s * 0.92):
-                return None
-
-            # 标签左上方应该是白色车辆卡片主体。
-            wx1 = max(0, tx - 145)
-            wy1 = max(0, ty - 105)
-            wx2 = max(0, tx - 12)
-            wy2 = max(0, ty - 8)
-            white_roi = screen_bgr[wy1:wy2, wx1:wx2]
-            if white_roi.size == 0:
-                return None
-            white_mask = (
-                (white_roi[:, :, 0] > 185) &
-                (white_roi[:, :, 1] > 185) &
-                (white_roi[:, :, 2] > 185)
-            )
-            white_ratio = float(np.count_nonzero(white_mask)) / max(1, white_mask.size)
-            if white_ratio < 0.18:
-                return None
-
-            # 标签左下方通常能看到橙色车型信息条或等级条;标签贴近底部时要向上覆盖一点。
-            ox1 = max(0, tx - 190)
-            oy1 = max(0, ty - 12)
-            ox2 = min(w_s, tx + 85)
-            oy2 = min(h_s, ty + th + 44)
-            orange_roi = screen_bgr[oy1:oy2, ox1:ox2]
-            if orange_roi.size == 0:
-                return None
-            hsv = cv2.cvtColor(orange_roi, cv2.COLOR_BGR2HSV)
-            orange_mask = cv2.inRange(hsv, np.array([8, 80, 140]), np.array([32, 255, 255]))
-            orange_ratio = float(np.count_nonzero(orange_mask)) / max(1, orange_mask.size)
-            if orange_ratio < 0.035:
-                return None
-
-            click_x = max(0, min(w_s - 1, tx - 60))
-            click_y = max(0, min(h_s - 1, ty - 42))
-            return click_x, click_y, white_ratio, orange_ratio
-        except Exception as e:
-            self.log(f"validate_new_tag_grid_fallback 异常: {e}")
-            return None
-
     def find_new_consumable_car_strict(self, region=None):
+        """两步法识别目标车卡：
+        Step 1: 全屏跑 newCC.png 找候选车卡（必须是 22B-STI 车图）
+        Step 2: 每个候选内部固定位置验 NEW 角标 + B600 等级标签
+        保留 multi-scale + gray/edge 兜底。
+        """
         if not self.is_running:
             return None
         try:
@@ -1101,9 +942,25 @@ class VisionMixin:
                 if s not in scales:
                     scales.append(s)
 
+            # 阈值常量
+            MAIN_THRESHOLD = 0.85       # newCC 彩色主阈值
+            MAIN_GRAY_THRESHOLD = 0.62  # 灰度兜底阈值
+            MAIN_EDGE_THRESHOLD = 0.20  # 边缘兜底阈值
+            MAIN_FALLBACK_MIN = 0.70    # 彩色低于此值直接跳过，不兜底
+            TAG_THRESHOLD = 0.85        # NEW 角标内部验阈值
+            CLS_THRESHOLD = 0.85        # B600 等级标签内部验阈值
+            NMS_DIST = 80               # 候选去重间距（像素）
+            TAG_PAD = 4                 # NEW/B600 内部搜索抗抖动（像素）
+            CLS_PAD = 4
+
+            # newCC 内部相对位置（实测：newcartag@220,142 / classB600@192,169 于 265x198 模板）
+            TAG_REL_X_RATIO = 220.0 / 265.0
+            TAG_REL_Y_RATIO = 142.0 / 198.0
+            CLS_REL_X_RATIO = 192.0 / 265.0
+            CLS_REL_Y_RATIO = 169.0 / 198.0
+
             best_candidate = None
             best_candidate_score = 0.0
-            accept_threshold = 0.70
             debug_saved = 0
 
             for scale in scales:
@@ -1123,231 +980,189 @@ class VisionMixin:
                 if h_c < 8 or w_c < 20 or h_c > screen_bgr.shape[0] or w_c > screen_bgr.shape[1]:
                     continue
 
-                tag_res = cv2.matchTemplate(screen_bgr, tag_tpl, cv2.TM_CCOEFF_NORMED)
-                loc = np.where(tag_res >= 0.72)
-                tag_points = list(zip(*loc[::-1]))
-                if not tag_points:
-                    _, max_tag, _, max_loc = cv2.minMaxLoc(tag_res)
-                    if max_tag >= 0.64:
-                        tag_points = [max_loc]
+                # 按缩放计算内部相对位置
+                tag_rel_x = int(w_m * TAG_REL_X_RATIO)
+                tag_rel_y = int(h_m * TAG_REL_Y_RATIO)
+                cls_rel_x = int(w_m * CLS_REL_X_RATIO)
+                cls_rel_y = int(h_m * CLS_REL_Y_RATIO)
 
-                checked_tags = set()
-                tag_candidates = []
-                for tx, ty in tag_points:
-                    if tx < int(screen_bgr.shape[1] * 0.20) or ty < int(screen_bgr.shape[0] * 0.18) or ty > int(screen_bgr.shape[0] * 0.90):
-                        continue
-                    tag_key = (tx // 18, ty // 14)
-                    if tag_key in checked_tags:
-                        continue
-                    checked_tags.add(tag_key)
-                    tag_candidates.append((ty, tx, float(tag_res[ty, tx])))
+                # === Step 1: 全屏跑 newCC，找候选车卡 ===
+                main_res = cv2.matchTemplate(screen_bgr, main_tpl, cv2.TM_CCOEFF_NORMED)
+                locs = np.where(main_res >= MAIN_FALLBACK_MIN)
+                raw_points = [(int(x), int(y), float(main_res[y, x])) for x, y in zip(*locs[::-1])]
+                raw_points.sort(key=lambda b: -b[2])
 
-                tag_candidates.sort()
-                if not tag_candidates:
-                    self.log(f"[StrictCar] 缩放 {scale:.3f} 未找到全新标签候选。")
+                # NMS 去重
+                candidates = []
+                for px, py, ps in raw_points:
+                    if all(abs(px - cx) > NMS_DIST or abs(py - cy) > NMS_DIST for cx, cy, _ in candidates):
+                        candidates.append((px, py, ps))
+
+                if not candidates:
+                    if debug_saved < 3:
+                        debug_saved += 1
+                        _, max_main, _, max_loc = cv2.minMaxLoc(main_res)
+                        self._save_strict_car_simple(
+                            f"no_newcc_scale_{scale:.3f}",
+                            screen_bgr=screen_bgr,
+                            meta={
+                                "reason": "全屏未找到 newCC 候选",
+                                "scale": float(scale),
+                                "max_newcc_score": float(max_main),
+                                "main_threshold": float(MAIN_THRESHOLD),
+                                "fallback_min": float(MAIN_FALLBACK_MIN),
+                            },
+                            anno={
+                                "title": f"缩放{scale:.3f} 无 newCC 候选 (最高{max_main:.3f})",
+                                "tag_boxes": [],
+                                "class_boxes": [],
+                                "max_tag_loc": (int(max_loc[0]), int(max_loc[1]), int(w_m), int(h_m), float(max_main)),
+                            },
+                        )
                     continue
 
-                for ty, tx, tag_score in tag_candidates:
-                    # 验证 2:全新标签下方/左下方必须能找到目标等级 B600。
-                    cx1 = max(0, int(tx - w_c * 1.45))
-                    cy1 = max(0, int(ty - h_c * 0.25))
-                    cx2 = min(screen_bgr.shape[1], int(tx + w_t + w_c * 0.40))
-                    cy2 = min(screen_bgr.shape[0], int(ty + h_t + h_c * 1.70))
-                    class_search = screen_bgr[cy1:cy2, cx1:cx2]
-                    if class_search.shape[0] < h_c or class_search.shape[1] < w_c:
-                        continue
-
-                    class_res = cv2.matchTemplate(class_search, class_tpl, cv2.TM_CCOEFF_NORMED)
-                    _, class_score, _, class_loc = cv2.minMaxLoc(class_res)
-                    # 等级是硬条件。低阈值会把 C466/D 等级误当 B600，导致错误车型上车。
-                    if class_score < 0.72:
-                        self.log(
-                            f"[StrictCar] 全新通过但等级不符: NEW:{tag_score:.3f} "
-                            f"B600:{class_score:.3f} 缩放:{scale:.3f}"
-                        )
-                        continue
-
-                    class_x = cx1 + class_loc[0]
-                    class_y = cy1 + class_loc[1]
-
-                    # 验证 3:以“全新”标签为锚点定位目标车辆图片区域。
-                    # 旧逻辑给模板一大块区域自由滑动，会匹配到局部最像的位置，导致截图区上偏/右下缺失。
-                    # 这里使用稳定的标签相对位置反推车辆图片左上角，只允许在小范围内微调。
-                    expected_rel_x = int(w_m * 0.88)
-                    expected_rel_y = int(h_m * 0.90)
-                    base_x = int(tx - expected_rel_x)
-                    base_y = int(ty - expected_rel_y)
-                    pad_x = max(8, int(w_m * 0.05))
-                    pad_y = max(8, int(h_m * 0.06))
-
-                    sx1 = max(0, base_x - pad_x)
-                    sy1 = max(0, base_y - pad_y)
-                    sx2 = min(screen_bgr.shape[1], base_x + pad_x + w_m)
-                    sy2 = min(screen_bgr.shape[0], base_y + pad_y + h_m)
-                    search = screen_bgr[sy1:sy2, sx1:sx2]
-                    if search.shape[0] < h_m or search.shape[1] < w_m:
-                        continue
-
-                    near_res = cv2.matchTemplate(search, main_tpl, cv2.TM_CCOEFF_NORMED)
-                    _, near_score, _, near_loc = cv2.minMaxLoc(near_res)
-                    card_x = sx1 + near_loc[0]
-                    card_y = sy1 + near_loc[1]
-
-                    # 额外验证车辆图片区。newCC.png 实际是车辆图片区域，不包含车型标题。
-                    # 彩色整图容易受光照/hover/压缩影响，补充灰度和边缘轮廓匹配。
+                # === Step 2: 对每个候选车卡做内部验证 ===
+                for car_x, car_y, car_score in candidates:
+                    # --- 2a: 判断车卡是否可信（彩色优先，灰度+边缘兜底）---
+                    is_card_valid = False
                     gray_score = 0.0
                     edge_score = 0.0
-                    try:
-                        candidate_patch = search[
-                            near_loc[1]:near_loc[1] + h_m,
-                            near_loc[0]:near_loc[0] + w_m,
-                        ]
-                        if candidate_patch.shape[:2] == main_tpl.shape[:2]:
-                            tpl_gray = cv2.cvtColor(main_tpl, cv2.COLOR_BGR2GRAY)
-                            cand_gray = cv2.cvtColor(candidate_patch, cv2.COLOR_BGR2GRAY)
-                            gray_res = cv2.matchTemplate(cand_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
-                            _, gray_score, _, _ = cv2.minMaxLoc(gray_res)
 
-                            tpl_edge = cv2.Canny(tpl_gray, 60, 160)
-                            cand_edge = cv2.Canny(cand_gray, 60, 160)
-                            edge_res = cv2.matchTemplate(cand_edge, tpl_edge, cv2.TM_CCOEFF_NORMED)
-                            _, edge_score, _, _ = cv2.minMaxLoc(edge_res)
-                    except Exception:
-                        gray_score = 0.0
-                        edge_score = 0.0
+                    if car_score >= MAIN_THRESHOLD:
+                        is_card_valid = True
+                    elif car_score >= MAIN_FALLBACK_MIN:
+                        # 灰度+边缘兜底
+                        try:
+                            patch = screen_bgr[car_y:car_y + h_m, car_x:car_x + w_m]
+                            if patch.shape[:2] == main_tpl.shape[:2]:
+                                tpl_gray = cv2.cvtColor(main_tpl, cv2.COLOR_BGR2GRAY)
+                                cand_gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+                                _, gray_score, _, _ = cv2.minMaxLoc(
+                                    cv2.matchTemplate(cand_gray, tpl_gray, cv2.TM_CCOEFF_NORMED))
+                                tpl_edge = cv2.Canny(tpl_gray, 60, 160)
+                                cand_edge = cv2.Canny(cand_gray, 60, 160)
+                                _, edge_score, _, _ = cv2.minMaxLoc(
+                                    cv2.matchTemplate(cand_edge, tpl_edge, cv2.TM_CCOEFF_NORMED))
+                                if gray_score >= MAIN_GRAY_THRESHOLD and edge_score >= MAIN_EDGE_THRESHOLD:
+                                    is_card_valid = True
+                        except Exception:
+                            pass
 
-                    tag_rel_x = tx - card_x
-                    tag_rel_y = ty - card_y
-                    if not (
-                        expected_rel_x - int(w_m * 0.12) <= tag_rel_x <= expected_rel_x + int(w_m * 0.12)
-                        and expected_rel_y - int(h_m * 0.16) <= tag_rel_y <= expected_rel_y + int(h_m * 0.16)
-                    ):
+                    if not is_card_valid:
                         self.log(
-                            f"[StrictCar] 标签附近目标车位置不符: NEW:{tag_score:.3f} "
-                            f"近邻:{near_score:.3f} 相对:({tag_rel_x},{tag_rel_y}) "
-                            f"期望:({expected_rel_x},{expected_rel_y}) 缩放:{scale:.3f}"
+                            f"[StrictCar] 车卡候选({car_x},{car_y}) 分数不足: "
+                            f"car={car_score:.3f} gray={gray_score:.3f} edge={edge_score:.3f} scale={scale:.3f}"
                         )
                         continue
 
-                    gray_threshold = 0.62
-                    edge_threshold = 0.20
-                    combo_ok = near_score >= 0.62 and gray_score >= gray_threshold and edge_score >= edge_threshold
-                    effective_score = max(float(near_score), float(gray_score), float(edge_score))
+                    # --- 2b: 在车卡内部固定位置验 NEW 角标 ---
+                    tx0 = car_x + tag_rel_x
+                    ty0 = car_y + tag_rel_y
+                    tx1 = max(0, tx0 - TAG_PAD)
+                    ty1 = max(0, ty0 - TAG_PAD)
+                    tx2 = min(screen_bgr.shape[1], tx0 + TAG_PAD + w_t)
+                    ty2 = min(screen_bgr.shape[0], ty0 + TAG_PAD + h_t)
+                    tag_search = screen_bgr[ty1:ty2, tx1:tx2]
+                    if tag_search.shape[0] < h_t or tag_search.shape[1] < w_t:
+                        continue
+                    tag_res = cv2.matchTemplate(tag_search, tag_tpl, cv2.TM_CCOEFF_NORMED)
+                    _, tag_score, _, _ = cv2.minMaxLoc(tag_res)
+
+                    if tag_score < TAG_THRESHOLD:
+                        self.log(
+                            f"[StrictCar] 车卡({car_x},{car_y}) NEW 不足: "
+                            f"tag={tag_score:.3f}<{TAG_THRESHOLD} car={car_score:.3f} scale={scale:.3f}"
+                        )
+                        continue
+
+                    # --- 2c: 在车卡内部固定位置验 B600 等级 ---
+                    cx0 = car_x + cls_rel_x
+                    cy0 = car_y + cls_rel_y
+                    cx1 = max(0, cx0 - CLS_PAD)
+                    cy1 = max(0, cy0 - CLS_PAD)
+                    cx2 = min(screen_bgr.shape[1], cx0 + CLS_PAD + w_c)
+                    cy2 = min(screen_bgr.shape[0], cy0 + CLS_PAD + h_c)
+                    cls_search = screen_bgr[cy1:cy2, cx1:cx2]
+                    if cls_search.shape[0] < h_c or cls_search.shape[1] < w_c:
+                        continue
+                    cls_res = cv2.matchTemplate(cls_search, class_tpl, cv2.TM_CCOEFF_NORMED)
+                    _, cls_score, _, _ = cv2.minMaxLoc(cls_res)
+
+                    if cls_score < CLS_THRESHOLD:
+                        self.log(
+                            f"[StrictCar] 车卡({car_x},{car_y}) B600 不足: "
+                            f"cls={cls_score:.3f}<{CLS_THRESHOLD} tag={tag_score:.3f} car={car_score:.3f} scale={scale:.3f}"
+                        )
+                        continue
+
+                    # === 通过所有验证，记录候选 ===
+                    effective_score = max(float(car_score), float(gray_score), float(edge_score))
+                    self.log(
+                        f"[StrictCar] 发现达标候选: car=({car_x},{car_y}) "
+                        f"car={car_score:.3f} gray={gray_score:.3f} edge={edge_score:.3f} "
+                        f"tag={tag_score:.3f} cls={cls_score:.3f} scale={scale:.3f}"
+                    )
+
                     if effective_score > best_candidate_score:
                         best_candidate_score = effective_score
+                        off_x = region[0] if region else 0
+                        off_y = region[1] if region else 0
+                        click_x = car_x + w_m // 2
+                        click_y = car_y + h_m // 2
+
                         self.last_strict_car_meta = {
                             "tag_score": float(tag_score),
-                            "class_score": float(class_score),
-                            "near_score": float(near_score),
+                            "class_score": float(cls_score),
+                            "car_score": float(car_score),
                             "gray_score": float(gray_score),
                             "edge_score": float(edge_score),
                             "effective_score": float(effective_score),
                             "scale": float(scale),
-                            "class_x": int(class_x),
-                            "class_y": int(class_y),
-                            "card_x": int(card_x),
-                            "card_y": int(card_y),
-                            "tag_x": int(tx),
-                            "tag_y": int(ty),
+                            "card_x": int(car_x),
+                            "card_y": int(car_y),
+                            "card_w": int(w_m),
+                            "card_h": int(h_m),
                         }
-                        # 点击点主点使用 B600 等级区域中心，同时记录车卡内多个候选点。
-                        # Forza 车库卡片有时 hover 成功但单一点击点不触发选择。
-                        off_x = region[0] if region else 0
-                        off_y = region[1] if region else 0
-                        click_x = class_x + w_c // 2
-                        click_y = class_y + h_c // 2
                         self.last_strict_car_click_points = [
-                            (int(click_x + off_x), int(click_y + off_y)),                         # B600 中心
-                            (int(card_x + w_m // 2 + off_x), int(card_y + h_m // 2 + off_y)),     # 车辆图片区中心
-                            (int(tx + w_t // 2 + off_x), int(ty + h_t // 2 + off_y)),             # 全新标签中心
-                            (int(card_x + int(w_m * 0.55) + off_x), int(card_y + int(h_m * 0.82) + off_y)),
+                            (int(click_x + off_x), int(click_y + off_y)),
+                            (int(car_x + int(w_m * 0.5) + off_x), int(car_y + int(h_m * 0.4) + off_y)),
+                            (int(car_x + int(w_m * 0.5) + off_x), int(car_y + int(h_m * 0.6) + off_y)),
+                            (int(car_x + cls_rel_x + w_c // 2 + off_x), int(car_y + cls_rel_y + h_c // 2 + off_y)),
                         ]
-                        best_candidate = (
-                            click_x + off_x,
-                            click_y + off_y,
-                            tag_score,
-                            class_score,
-                            tag_rel_x,
-                            tag_rel_y,
-                            class_x,
-                            class_y,
-                            scale,
-                            near_score,
-                            gray_score,
-                            edge_score,
-                        )
+                        best_candidate = (click_x + off_x, click_y + off_y, car_x, car_y,
+                                          car_score, tag_score, cls_score, gray_score, edge_score, scale)
 
-                    if near_score >= accept_threshold or combo_ok:
-                        self.log(
-                            f"[StrictCar] 发现达标候选: NEW:{tag_score:.3f} B600:{class_score:.3f} "
-                            f"目标:{near_score:.3f} 灰度:{gray_score:.3f} 边缘:{edge_score:.3f} "
-                            f"标签相对:({tag_rel_x},{tag_rel_y}) 等级:({class_x},{class_y}) 缩放:{scale:.3f}"
-                        )
-                    else:
-                        self.log(
-                            f"[StrictCar] 标签附近目标车分数不足: NEW:{tag_score:.3f} "
-                            f"目标:{near_score:.3f} 灰度:{gray_score:.3f} 边缘:{edge_score:.3f} "
-                            f"相对:({tag_rel_x},{tag_rel_y}) 缩放:{scale:.3f}"
-                        )
-                        if (near_score >= 0.35 or gray_score >= 0.35 or edge_score >= 0.35) and debug_saved < 5:
+                        # 保存成功调试快照
+                        if debug_saved < 5:
                             debug_saved += 1
-                            self._save_strict_car_debug(
+                            self._save_strict_car_simple(
+                                f"locked_scale_{scale:.3f}",
                                 screen_bgr=screen_bgr,
-                                search_bgr=search,
-                                main_tpl=main_tpl,
-                                card_x=card_x,
-                                card_y=card_y,
-                                card_w=w_m,
-                                card_h=h_m,
-                                tag_x=tx,
-                                tag_y=ty,
-                                tag_w=w_t,
-                                tag_h=h_t,
-                                class_x=class_x,
-                                class_y=class_y,
-                                class_w=w_c,
-                                class_h=h_c,
-                                search_x1=sx1,
-                                search_y1=sy1,
-                                meta={
-                                    "tag_score": float(tag_score),
-                                    "class_score": float(class_score),
-                                    "near_score": float(near_score),
-                                    "gray_score": float(gray_score),
-                                    "edge_score": float(edge_score),
-                                    "effective_score": float(effective_score),
-                                    "tag_rel_x": int(tag_rel_x),
-                                    "tag_rel_y": int(tag_rel_y),
-                                    "expected_rel_x": int(expected_rel_x),
-                                    "expected_rel_y": int(expected_rel_y),
-                                    "scale": float(scale),
-                                    "card_x": int(card_x),
-                                    "card_y": int(card_y),
-                                    "tag_x": int(tx),
-                                    "tag_y": int(ty),
-                                    "class_x": int(class_x),
-                                    "class_y": int(class_y),
-                                    "accept_threshold": float(accept_threshold),
+                                meta=self.last_strict_car_meta,
+                                anno={
+                                    "title": f"锁定目标 car={car_score:.2f} tag={tag_score:.2f} b600={cls_score:.2f}",
+                                    "tag_boxes": [(int(tx0), int(ty0), int(w_t), int(h_t), float(tag_score))],
+                                    "class_boxes": [(int(cx0), int(cy0), int(w_c), int(h_c), float(cls_score))],
+                                    "max_tag_loc": (int(car_x), int(car_y), int(w_m), int(h_m), float(car_score)),
                                 },
                             )
 
             if best_candidate:
-                x, y, tag_score, class_score, tag_rel_x, tag_rel_y, class_x, class_y, scale, near_score, gray_score, edge_score = best_candidate
-                gray_threshold = 0.62
-                edge_threshold = 0.20
-                combo_ok = near_score >= 0.62 and gray_score >= gray_threshold and edge_score >= edge_threshold
-                if near_score >= accept_threshold or combo_ok:
-                    self.log(
-                        f"[StrictCar] 最终锁定最高分目标车: NEW:{tag_score:.3f} B600:{class_score:.3f} "
-                        f"目标:{near_score:.3f} 灰度:{gray_score:.3f} 边缘:{edge_score:.3f} 有效:{best_candidate_score:.3f} "
-                        f"标签相对:({tag_rel_x},{tag_rel_y}) 等级:({class_x},{class_y}) "
-                        f"缩放:{scale:.3f} 阈值:目标>={accept_threshold:.2f}/组合(目标>=0.62且灰度>={gray_threshold:.2f}且边缘>={edge_threshold:.2f})"
-                    )
-                    return (x, y)
-
+                x, y, car_x, car_y, car_score, tag_score, cls_score, gray_score, edge_score, scale = best_candidate
                 self.log(
-                    f"[StrictCar] 本屏最高候选分数不足: 目标 {near_score:.3f} / 灰度 {gray_score:.3f} / 边缘 {edge_score:.3f} "
-                    f"低于安全阈值, 不点击以避免误上车。"
+                    f"[StrictCar] 最终锁定目标车: car=({car_x},{car_y}) "
+                    f"car={car_score:.3f} tag={tag_score:.3f} cls={cls_score:.3f} "
+                    f"gray={gray_score:.3f} edge={edge_score:.3f} scale={scale:.3f}"
+                )
+                return (x, y)
+
+            self.log("[StrictCar] 本帧未找到达标目标车。")
+            # 保存最终失败快照
+            if debug_saved < 5:
+                self._save_strict_car_simple(
+                    "final_no_target",
+                    screen_bgr=screen_bgr,
+                    meta={"reason": "所有缩放均未找到达标目标"},
                 )
             return None
         except Exception as e:
@@ -1363,16 +1178,6 @@ class VisionMixin:
             time.sleep(interval)
         return None
 
-    def find_image_smart(self, template_path, primary_region=None, fallback_region=None, threshold=0.75, fast_mode=True):
-        if primary_region:
-            pos = self.find_image(template_path, region=primary_region, threshold=threshold, fast_mode=fast_mode)
-            if pos:
-                return pos
-
-        if fallback_region:
-            return self.find_image(template_path, region=fallback_region, threshold=threshold, fast_mode=fast_mode)
-
-        return None
     def to_gray_image(self, img):
         return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     def to_edge_image(self, img):
@@ -1635,18 +1440,6 @@ class VisionMixin:
             self.log(f"find_any_image_transparent 异常: {e}")
             return None
 
-    def wait_for_any_image_transparent(self, image_list, region=None, threshold=0.70, timeout=30, interval=0.4, fast_mode=True):
-        """等待带有透明背景的多张图片中的任意一张出现"""
-        start = time.time()
-        while self.is_running and time.time() - start < timeout:
-            pos = self.find_any_image_transparent(image_list, region, threshold, fast_mode)
-            if pos:
-                return pos
-
-            sleep_end = time.time() + interval
-            while self.is_running and time.time() < sleep_end:
-                time.sleep(0.05)
-        return None
     def wait_for_any_image(self, image_list, region=None, threshold=0.75, timeout=30, interval=0.4, fast_mode=True, log_text=None):
         start = time.time()
 
@@ -1699,26 +1492,6 @@ class VisionMixin:
             if pos:
                 self.log(f"[BuyNewUsed] 命中模式: {label}")
                 return pos
-        return None
-
-    def wait_for_image_with_element(self, main_path, sub_path, region=None, threshold=0.85, timeout=30, interval=0.4, fast_mode=True):
-        start = time.time()
-
-        while self.is_running and time.time() - start < timeout:
-            pos = self.find_image_with_element(
-                main_path,
-                sub_path,
-                region=region,
-                threshold=threshold,
-                fast_mode=fast_mode
-            )
-            if pos:
-                return pos
-
-            sleep_end = time.time() + interval
-            while self.is_running and time.time() < sleep_end:
-                time.sleep(0.05)
-
         return None
 
     def match_template_score(self, src, tpl):

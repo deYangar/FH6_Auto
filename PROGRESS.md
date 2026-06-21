@@ -1,7 +1,7 @@
 # FH6Auto 项目进度
 
 ## 当前版本
-**v1.1.6.3** (2026-06-19)
+**v1.1.6.4** (2026-06-21)
 
 ---
 
@@ -74,6 +74,51 @@ forza_test_tool/
 - **2026-06-19 选车/上车调试功能**: 新增并增强 `debug_car_select/` 调试输出。超级抽奖识别到目标车后，会保存每个 SendMessage 候选点的 `before_send_point_N` / `after_send_point_N`、`before_enter_select` / `after_enter_select`、`after_rc_search` 等阶段截图和 meta，标注目标点击点/上车按钮坐标，便于分析识别正确但后台点击未选中/未上车的问题。
 - **2026-06-19 超级抽奖 SendMessage 强点选车**: 修复底层鼠标释放事件后，3 次点击会真实生效并点过头，因此选车收敛为只点主点（B600 中心）单次 SendMessage（clicks=1, hold=0.22s, gap=0.18s），不发送 `WM_LBUTTONDBLCLK`。修复调试 meta 中 `np.int64` 导致 JSON 序列化失败的问题；`WM_LBUTTONUP` 的 `wParam` 从错误的 `MK_LBUTTON` 改为 `0`，避免游戏只收到 hover/press 而不触发真正 release/click。用户确认现已能正确选择车辆上车。
 - **2026-06-19 超级抽奖升级与调校/上车过场判定**: 上车后卡在“升级与调校/车辆专精”。用户提供 `Downloads/调试日志/debug_upgrade_flow` 后确认红圈点位正确，但 `before_uandt_click` 亮度均值仅约 14.9，说明暗屏加载阶段模板已提前命中，菜单还不可交互；`after_uandt_click` 亮度约 83.7 才像稳定菜单。已新增 `_wait_for_uandt_ready()`：必须亮度不低（默认均值>=42）且连续 3 帧命中同一 UandT 位置，才允许进入。用户希望可点击时优先鼠标点，因此主路径为“菜单稳定后 SendMessage 鼠标点击升级与调校”；若未找到车辆专精，再用 `Down` 一次 + `Enter` 兜底复查。用户进一步反馈上车后无法正确 Esc 退回；已给 `_wait_for_uandt_ready()` 增加 `press_esc_when_missing=True`：上车后如果画面已亮但仍看不到 UandT，每隔约 1.2s 按一次 Esc 尝试退回车辆主菜单，直到 UandT 连续稳定命中。`车辆专精`识别阈值回到原版 0.62，并将车辆专精点击改为 SendMessage 单击。用户又反馈按 Enter 后已进入上车过场，但脚本仍因找不到 `rc.png` 判失败；查看截图确认 after_enter_select 已是黑屏加载/车辆过场。新增 `_is_boarding_transition()`：若 Enter 后全屏亮度均值 <=8 判定已进入上车/切车过场，跳过 `rc.png` 搜索和补 Enter，直接等待车辆菜单；补 Enter 后同样检测到过场则继续，不再误判失败。
+
+---
+
+## 2026-06-21 重构：两步法选车识别 + 模式1流程对齐上游
+
+### 背景
+
+06-20 几何参数实测修复后，发现 B600 (真目标) 和 B539 (误目标) 的等级标签视觉外观几乎完全一致，传统模板匹配 (TM_CCOEFF_NORMED) 无法区分——539 和 600 的数字笔画相似度 >0.95，任何阈值都救不了。
+
+### 根因
+
+旧 `find_new_consumable_car_strict` 流程是 **NEW 全屏扫 → B600 附近搜 → 车卡反推**，三个模板各自独立全屏匹配后“凑对”，导致 B539 车卡上的 NEW 角标 + B539 被误识为 B600 → 锁定了错误车辆。
+
+### 修复：两步法识别 (vision.py)
+
+**新流程**：
+1. **Step 1**: 全屏跑 `newCC.png` 找候选车卡（必须是 22B-STI 车图，`MAIN_THRESHOLD=0.85`），NMS 去重
+2. **Step 2**: 每个候选内部固定相对位置验 `newcartag.png` (NEW 角标) + `classB600.png` (等级标签)，`TAG_THRESHOLD=0.85` / `CLS_THRESHOLD=0.85`
+3. 三者必须在同一张车卡内几何对齐，彻底杜绝“跨车卡凑对”
+
+**保留能力**：
+- Multi-scale (1.0/0.98/1.02/0.95/1.05 + `get_scales_to_try`)
+- Gray + Edge 兜底（彩色 0.70~0.85 区间启用，`GRAY=0.62` / `EDGE=0.20`）
+- 调试快照（`_save_strict_car_simple` 成功+失败都输出）
+- 接口不变（`last_strict_car_meta` / `last_strict_car_click_points`）
+
+**实测验证**：
+- 负例（画面无目标）：输出 0 个目标 ✅
+- 正例（画面有 2 个目标）：输出 2 个目标，无误检 ✅
+
+### 修复：模式1 选车后流程对齐上游 (cj_logic.py)
+
+**旧逻辑**：没找到 rc.png → 补 Enter → 再找 rc.png → 还找不到 → 检测黑屏过场 → 没黑屏 → **return False 停止**
+
+**问题**：上车过场不一定是黑屏（`_is_boarding_transition` 只检测亮度≤8 的纯黑），导致车已上但程序以为没上，停止运行。
+
+**新逻辑**（对齐上游 `latest_main.py`）：没找到 rc.png → **直接双 Enter 上车** → 进升级循环（`_wait_for_uandt_ready` 自动 ESC 找升级与调校）
+
+### 清理
+- 删除 `_debug_20260621_085058/`（调试产物）
+- 删除 `_review_upstream/`（上游审查临时目录）
+- 删除 `UPSTREAM_UPDATE_PLAN.md`（已执行完的合并方案）
+- 删除 `vision.py.backup_*`（备份文件）
+- 删除 `_fix_p.py`（临时脚本）
+- `.gitignore` 新增 `_debug_*/`、`*.backup_*`、`_review_upstream/`、`UPSTREAM_UPDATE_PLAN.md`
 - **2026-06-19 超级抽奖计数器/误选车型修复**: 用户反馈成功专精后计数器不增加，且在没有符合条件车辆后误选“全新但非 22B/B600”的 SVX。修复：`cj_counter += 1` 移到“已进入车辆专精并执行技能路径”之后、`SPNE` 提前 return 之前，避免成功处理车辆不计数；`find_new_consumable_car_strict()` 的 B600 匹配阈值从 0.58 提高到 0.72；新增 `_verify_target_point_b600()`，车卡点击后、Enter 上车前二次校验 B600。后续用户反馈严格识别已高置信命中 B600，但点击/hover 后小区域二次匹配误杀；修复为优先使用严格识别阶段保存的 `last_strict_car_meta.class_score`（点击前置信度）通过二次校验，只有严格阶段分数不足时才用扩大后的局部区域兜底匹配。列表未找到满足【全新+B600+目标车型】条件的车辆时返回 `True` 结束超抽步骤，不再触发全局恢复。车辆列表右移翻页节奏放慢：单次 Right delay 0.10s、间隔 0.22s，翻页后等待 0.65s，避免列表滑动未完成就识别/点击。
 - **2026-06-19 全部计数器审查**: 用户要求不只修超抽，还要检查循环跑图/批量买车/其他计数器。审查结论：跑图在 `restart.png` 完赛后才 `race_counter += 1`，超时重开不计数，逻辑基本正确；买车在一套购买确认键序列后 `car_counter += 1`，逻辑基本正确。增强：为跑图、买车、超抽都增加明确日志 `xxx计数 +1: 当前/目标`；修复 UI 待机状态会把任务进度/大循环重置成 `0/0` 的问题，改为停止/完成时保留最后计数，新任务开始时再初始化。用户反馈顶部任务卡片“执行: 0/99”一直不变，根因是 `update_running_ui()` 只更新运行面板 `lbl_runtime_progress`，未同步更新 `lbl_race/lbl_car/lbl_cj`；已增加任务名到顶部标签映射，三个卡片的“执行: x/y”随业务计数同步刷新。
 - **2026-06-19 循环跑图选车兜底删除/调试记录/组合识别修复**: 用户反馈循环跑图日志显示“组合识别未命中”后又用 `skillcar.png` 单图兜底命中，导致未选正确车辆就开始跑图。解释：组合识别是同时匹配 `skillcar.png + liketag.png`，本应作为目标车辆确认；原代码组合失败后降级到单图 `skillcar.png` 阈值 0.68，过于危险。已删除两处单图兜底：组合未命中时只重新选品牌/翻页继续找组合，最终仍无组合目标则失败停止，禁止仅凭 `skillcar.png` 开始跑图。新增 `debug_race_car_select/`：组合识别未命中时保存 `screen_raw.png`、`screen_annotated.png`、`meta.json`，标注/记录 `skillcar.png`、`liketag.png` 全屏最佳分数、缩放、位置，以及最佳 skillcar 附近的 liketag 分数。用户提供 meta 显示 `skillcar.png` 最佳缩放 1.137，`liketag_near_skillcar` 最佳缩放 0.711，证明失败原因有两层：一是组合识别强制主图和子元素使用同一 scale；二是循环跑图调用组合识别时 `fast_mode=True` 只取前 8 个缩放，漏掉 1600 基准对应的 1.137。已修改 `find_image_with_element_multi()`，主图 skillcar 使用主缩放，子元素 liketag 在主图附近独立尝试全部缩放，并在命中日志输出“主缩放/标签缩放”；循环跑图两处组合识别改为 `fast_mode=False`、timeout 4s，确保能尝试 1.137 等完整缩放。用户指出全屏最佳 liketag 可能落到 BRZ 上，真正应该看同一车卡内 liketag；已增强 `debug_race_car_select` 标注：红框=skillcar，全屏绿框=全屏最佳 liketag（仅参考），黄框=skillcar 附近/同车卡内最佳 liketag（正式组合依据）。

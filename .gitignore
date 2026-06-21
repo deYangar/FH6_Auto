@@ -33,6 +33,10 @@ debug/
 main ocr test.py
 fh6_auto_main.py
 build_tester.bat
+_debug_*/
+*.backup_*
+_review_upstream/
+UPSTREAM_UPDATE_PLAN.md
 
 # IDE / OS files
 .idea/

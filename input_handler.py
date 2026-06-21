@@ -39,12 +39,12 @@ class InputMixin:
             x = Input(ctypes.c_ulong(1), ii_)
             SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
-    def hw_press(self, key, delay=0.08):
+    def hw_press(self, key, delay=0.08, use_send=False):
         self.check_pause()
         if not self.is_running:
             return
         if self.bg_input:
-            self.bg_input.press(key, delay=delay)
+            self.bg_input.press(key, delay=delay, use_send=use_send)
         else:
             self.hw_key_down(key)
             time.sleep(delay)

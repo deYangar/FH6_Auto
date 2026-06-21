@@ -25,7 +25,7 @@ import fh6_backend
 import focus_hook_manager
 
 from config import (
-    APP_DIR, INTERNAL_DIR, CONFIG_DIR, USER_CONFIG_FILE, LOG_FILE,
+    APP_DIR, INTERNAL_DIR, USER_CONFIG_FILE, LOG_FILE,
     CACHE_DIR, TEMPLATE_CACHE_FILE, TEMPLATE_META_FILE, CURRENT_VERSION,
     auto_extract_configs, auto_extract_images, get_img_path, get_asset_path
 )
@@ -36,6 +36,7 @@ from recovery import RecoveryMixin
 from race_logic import RaceMixin
 from buy_logic import BuyMixin
 from cj_logic import CJMixin
+from sell_logic import SellMixin
 from anti_cheat import AntiCheatMixin
 
 pyautogui.FAILSAFE = False
@@ -45,7 +46,7 @@ ctk.set_default_color_theme("blue")
 
 class FH_UltimateBot(
     InputMixin, VisionMixin, RecoveryMixin,
-    RaceMixin, BuyMixin, CJMixin, AntiCheatMixin,
+    RaceMixin, BuyMixin, CJMixin, SellMixin, AntiCheatMixin,
     ctk.CTk
 ):
     def __init__(self):
@@ -76,6 +77,7 @@ class FH_UltimateBot(
         self.race_counter = 0
         self.car_counter = 0
         self.cj_counter = 0
+        self.sc_count = 0
         self.global_loop_current = 0
 
         self.template_cache = {}
@@ -149,6 +151,7 @@ class FH_UltimateBot(
             "循环跑图": 0.0,
             "批量买车": 0.0,
             "超级抽奖": 0.0,
+            "移除车辆": 0.0,
             "测试启动": 0.0,
             "F3测图": 0.0,
         }
@@ -168,8 +171,8 @@ class FH_UltimateBot(
             iv = int(v)
             if iv < 1:
                 iv = 1
-            if iv > 3:
-                iv = 3
+            if iv > 4:
+                iv = 4
             entry_widget.delete(0, "end")
             entry_widget.insert(0, str(iv))
         except Exception:
@@ -213,7 +216,13 @@ class FH_UltimateBot(
             "restart_cmd": "start steam://run/2483190",
             "race_timeout": 300,
             "debug_screenshots": False,
-            "focus_hook_enabled": False
+            "focus_hook_enabled": False,
+            "cj_mode": 1,
+            "auto_close_game": False,
+            "auto_shutdown": False,
+            "sell_count": 10,
+            "chk_4": True,
+            "next_4": 1
         }
         ext_path = USER_CONFIG_FILE
         # 2. 读取用户的 config.json,并与底本合并(自动补全缺失项)
@@ -245,16 +254,29 @@ class FH_UltimateBot(
             self.config["next_1"] = int(self.entry_next1.get())
             self.config["next_2"] = int(self.entry_next2.get())
             self.config["next_3"] = int(self.entry_next3.get())
+            if hasattr(self, "entry_next4"):
+                self.config["next_4"] = int(self.entry_next4.get())
+            if hasattr(self, "entry_sc"):
+                self.config["sell_count"] = int(self.entry_sc.get())
         except Exception:
             pass
 
         self.config["chk_1"] = self.var_chk1.get()
         self.config["chk_2"] = self.var_chk2.get()
         self.config["chk_3"] = self.var_chk3.get()
+        if hasattr(self, "var_chk4"):
+            self.config["chk_4"] = self.var_chk4.get()
         self.config["auto_restart"] = self.var_auto_restart.get()
         self.config["debug_screenshots"] = self.var_debug_screenshots.get()
         self.config["focus_hook_enabled"] = self.var_focus_hook.get()
         self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
+        if hasattr(self, "opt_cj_mode"):
+            cj_mode_val = self.opt_cj_mode.get()
+            self.config["cj_mode"] = 2 if "模式2" in cj_mode_val else 1
+        if hasattr(self, "var_auto_close"):
+            self.config["auto_close_game"] = self.var_auto_close.get()
+        if hasattr(self, "var_auto_shutdown"):
+            self.config["auto_shutdown"] = self.var_auto_shutdown.get()
         try:
             with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
@@ -262,6 +284,11 @@ class FH_UltimateBot(
             self.log(f"保存配置失败: {e}")
 
     def is_debug_screenshots_enabled(self):
+        if hasattr(self, "var_debug_screenshots"):
+            try:
+                return bool(self.var_debug_screenshots.get())
+            except Exception:
+                pass
         return bool(self.config.get("debug_screenshots", False))
 
     def is_focus_hook_enabled(self):
@@ -448,7 +475,7 @@ class FH_UltimateBot(
 
         self.box_cj = ctk.CTkFrame(
             self.config_frame,
-            width=318,
+            width=340,
             height=255,
             corner_radius=8,
             fg_color="#171D26",
@@ -465,6 +492,22 @@ class FH_UltimateBot(
         left_cj.pack(side="left", padx=(12, 6))
 
         ctk.CTkLabel(left_cj, text="3. 超级抽奖", font=ctk.CTkFont(weight="bold", size=18)).pack(pady=(2, 10))
+
+        # ====== 超级抽奖模式选择 ======
+        saved_cj_mode = self.config.get("cj_mode", 1)
+        self.opt_cj_mode = ctk.CTkOptionMenu(
+            left_cj,
+            values=["模式1: 从我的车辆开始", "模式2: 从设计与喷涂开始"],
+            width=140,
+            height=26,
+            corner_radius=6,
+        )
+        if saved_cj_mode == 2:
+            self.opt_cj_mode.set("模式2: 从设计与喷涂开始")
+        else:
+            self.opt_cj_mode.set("模式1: 从我的车辆开始")
+        self.opt_cj_mode.pack(pady=(0, 6))
+        # ==============================
 
         self.btn_cj = ctk.CTkButton(
             left_cj,
@@ -540,6 +583,20 @@ class FH_UltimateBot(
         self.next_frame3, self.entry_next3, self.chk3 = create_next_step(
             self.config_frame, self.var_chk3, self.config.get("next_3", 1)
         )
+
+        # ====== 卖车卡片 ======
+        self.var_chk4 = ctk.BooleanVar(value=self.config.get("chk_4", True))
+        box_sell, self.btn_sell, self.entry_sc, self.lbl_sc = create_box(
+            self.config_frame,
+            "4. 移除车辆",
+            "开始",
+            lambda: self.start_pipeline("sell"),
+            "#C0392B",
+            self.config.get("sell_count", 10),
+        )
+        self.next_frame4, self.entry_next4, self.chk4 = create_next_step(
+            self.config_frame, self.var_chk4, self.config.get("next_4", 1)
+        )
         # ====== 抽离到底部的全局设置栏 (放在上方) ======
         # 【修改1】把 self.top_container 改成了 self
         self.global_settings_frame = ctk.CTkFrame(self, fg_color="#18202B", height=48, corner_radius=8)
@@ -579,6 +636,23 @@ class FH_UltimateBot(
             command=self.on_focus_hook_toggle,
         )
         self.cb_focus_hook.pack(side="left", padx=(0, 16))
+        # ====== 任务完成自动关游戏/关机 ======
+        self.var_auto_close = ctk.BooleanVar(value=self.config.get("auto_close_game", False))
+        self.cb_auto_close = ctk.CTkCheckBox(
+            self.global_settings_frame,
+            text="任务完成关游戏",
+            variable=self.var_auto_close,
+            command=self.save_config,
+        )
+        self.cb_auto_close.pack(side="left", padx=(0, 12))
+        self.var_auto_shutdown = ctk.BooleanVar(value=self.config.get("auto_shutdown", False))
+        self.cb_auto_shutdown = ctk.CTkCheckBox(
+            self.global_settings_frame,
+            text="任务完成关机",
+            variable=self.var_auto_shutdown,
+            command=self.save_config,
+        )
+        self.cb_auto_shutdown.pack(side="left", padx=(0, 16))
         ctk.CTkLabel(self.global_settings_frame, text="启动命令:").pack(side="left", padx=(0, 5))
         self.le_restart_cmd = ctk.CTkEntry(self.global_settings_frame, height=28, corner_radius=6)
         self.le_restart_cmd.insert(0, self.config.get("restart_cmd", "start steam://run/2483190"))
@@ -667,6 +741,8 @@ class FH_UltimateBot(
         self.entry_next1.bind("<FocusOut>", lambda e: self.normalize_step_entry(self.entry_next1, 2))
         self.entry_next2.bind("<FocusOut>", lambda e: self.normalize_step_entry(self.entry_next2, 3))
         self.entry_next3.bind("<FocusOut>", lambda e: self.normalize_step_entry(self.entry_next3, 1))
+        if hasattr(self, "entry_next4"):
+            self.entry_next4.bind("<FocusOut>", lambda e: self.normalize_step_entry(self.entry_next4, 1))
 
 
         self.bottom_frame = ctk.CTkFrame(self, fg_color="transparent", height=260)
@@ -742,6 +818,7 @@ class FH_UltimateBot(
         race_total = totals.get("循环跑图", 0.0)
         buy_total = totals.get("批量买车", 0.0)
         cj_total = totals.get("超级抽奖", 0.0)
+        sell_total = totals.get("移除车辆", 0.0)
 
         active_task = getattr(self, "active_task_name", "")
         if active_task == "循环跑图":
@@ -750,6 +827,8 @@ class FH_UltimateBot(
             buy_total += task_elapsed
         elif active_task == "超级抽奖":
             cj_total += task_elapsed
+        elif active_task == "移除车辆":
+            sell_total += task_elapsed
 
         try:
             self.lbl_runtime_task_time.configure(text=self.format_elapsed(task_elapsed))
@@ -758,7 +837,8 @@ class FH_UltimateBot(
                 text=(
                     f"跑图 {self.format_elapsed(race_total)} | "
                     f"买车 {self.format_elapsed(buy_total)} | "
-                    f"超抽 {self.format_elapsed(cj_total)}"
+                    f"超抽 {self.format_elapsed(cj_total)} | "
+                    f"卖车 {self.format_elapsed(sell_total)}"
                 )
             )
         except Exception: pass
@@ -784,6 +864,7 @@ class FH_UltimateBot(
                     "循环跑图": getattr(self, "lbl_race", None),
                     "批量买车": getattr(self, "lbl_car", None),
                     "超级抽奖": getattr(self, "lbl_cj", None),
+                    "移除车辆": getattr(self, "lbl_sc", None),
                 }
                 target_label = label_map.get(task_name)
                 if target_label:
@@ -808,7 +889,7 @@ class FH_UltimateBot(
                 # 新任务开始时 start_pipeline 会重新初始化并刷新这些值。
                 self.lbl_runtime_task_time.configure(text="00:00:00")
                 self.lbl_runtime_total_time.configure(text="00:00:00")
-                self.lbl_runtime_totals.configure(text="跑图 00:00:00 | 买车 00:00:00 | 超抽 00:00:00")
+                self.lbl_runtime_totals.configure(text="跑图 00:00:00 | 买车 00:00:00 | 超抽 00:00:00 | 卖车 00:00:00")
                 self.btn_runtime_pause.configure(state="disabled", text="暂停 F9", fg_color="#F1C40F", hover_color="#D4AC0D", text_color="#111827")
                 self.btn_runtime_stop.configure(state="disabled")
                 self.btn_stop.configure(text="等待指令 (F8)", fg_color="#222B36", hover_color="#2F3B4A")
@@ -882,14 +963,16 @@ class FH_UltimateBot(
         self.race_counter = 0
         self.car_counter = 0
         self.cj_counter = 0
+        self.sc_count = 0
         self.global_loop_current = 0
 
         def runner():
+            task_finished_normally = False
             if not self.check_and_focus_game():
                 self.stop_all()
                 return
 
-            steps = ["race", "buy", "cj"]
+            steps = ["race", "buy", "cj", "sell"]
             curr_idx = steps.index(start_step)
 
             try:
@@ -915,6 +998,8 @@ class FH_UltimateBot(
                         success = self.logic_buy_car(int(self.entry_car.get()))
                     elif step_name == "cj":
                         success = self.logic_super_wheelspin(int(self.entry_cj.get()))
+                    elif step_name == "sell":
+                        success = self.find_and_remove_consumable_car(int(self.entry_sc.get()))
                 except Exception as e:
                     self.log(f"执行模块 {step_name} 时异常: {e}")
                     success = False
@@ -946,17 +1031,22 @@ class FH_UltimateBot(
                 next_idx = curr_idx + 1 # 默认前往下一步
                 if curr_idx == 0:
                     if self.var_chk1.get():
-                        try: next_idx = max(0, min(3, int(self.entry_next1.get()) - 1))
+                        try: next_idx = max(0, min(4, int(self.entry_next1.get()) - 1))
                         except Exception: next_idx = 1
                     else: break
                 elif curr_idx == 1:
                     if self.var_chk2.get():
-                        try: next_idx = max(0, min(3, int(self.entry_next2.get()) - 1))
+                        try: next_idx = max(0, min(4, int(self.entry_next2.get()) - 1))
                         except Exception: next_idx = 2
                     else: break
                 elif curr_idx == 2:
                     if self.var_chk3.get():
-                        try: next_idx = max(0, min(2, int(self.entry_next3.get()) - 1))
+                        try: next_idx = max(0, min(4, int(self.entry_next3.get()) - 1))
+                        except Exception: next_idx = 3
+                    else: break
+                elif curr_idx == 3:
+                    if self.var_chk4.get():
+                        try: next_idx = max(0, min(3, int(self.entry_next4.get()) - 1))
                         except Exception: next_idx = 0
                     else: break
 
@@ -965,6 +1055,7 @@ class FH_UltimateBot(
 
                     if self.global_loop_current > total_loops:
                         self.log("达到设定的总循环次数,任务圆满结束。")
+                        task_finished_normally = True
                         break
 
                     self.log(f"开启新一轮大循环 ({self.global_loop_current}/{total_loops})")
@@ -974,9 +1065,29 @@ class FH_UltimateBot(
                     self.race_counter = 0
                     self.car_counter = 0
                     self.cj_counter = 0
+                    self.sc_count = 0
 
                 curr_idx = next_idx
 
+            # ====== 任务完成后自动关游戏/关机 ======
+            if task_finished_normally and self.is_running:
+                if self.var_auto_close.get():
+                    self.log("【任务圆满完成】已开启自动关游戏，30秒后强制关闭游戏...")
+                    for _ in range(30):
+                        if not self.is_running: break
+                        time.sleep(1)
+                    if self.is_running:
+                        try:
+                            os.system('taskkill /F /IM forzahorizon6.exe /T')
+                            self.log("已强行关闭游戏进程。")
+                            time.sleep(2)
+                        except Exception as e:
+                            self.log(f"关闭游戏失败: {e}")
+                if self.var_auto_shutdown.get() and self.is_running:
+                    self.log("【任务圆满完成】触发自动关机！系统将在 3 分钟后关闭！")
+                    self.log("提示：如需取消关机，请按 Win+R 键，输入 shutdown -a 并回车。")
+                    os.system("shutdown -s -t 180")
+            # ==============================================
             self.stop_all()
 
         self.current_thread = threading.Thread(target=runner, daemon=True)

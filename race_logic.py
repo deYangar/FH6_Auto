@@ -218,6 +218,9 @@ class RaceMixin:
 
         self.update_running_ui("循环跑图", self.race_counter, target_count)
 
+        # ====== 任务内锁定，每次进入任务强制重置详情状态锁 ======
+        self.detail_state_confirmed = False
+
         self.log("准备验证/进入菜单...")
         if not self.enter_menu():
             return False
@@ -312,6 +315,31 @@ class RaceMixin:
             timeout=4,
             interval=0.25
         )
+        if pos_target:
+            self.detail_state_confirmed = True
+
+        # 如果没找到，且之前从未确认过状态，则按下 P 键再找一次
+        if not pos_target and not self.detail_state_confirmed:
+            self.log("当前页面未找到车辆，尝试按 P 切换详情状态(SendMessage强发)...")
+            time.sleep(0.3)
+            self.hw_press("p", use_send=True)
+            time.sleep(1.0)
+            self.hw_press("p", use_send=True)
+            time.sleep(0.6)
+            pos_target = self.wait_for_image_with_element_multi(
+                "skillcar.png",
+                "liketag.png",
+                region=self.regions["全界面"],
+                fast_mode=False,
+                main_threshold=0.7,
+                like_threshold=0.7,
+                final_threshold=0.7,
+                timeout=4,
+                interval=0.25
+            )
+            if pos_target:
+                self.detail_state_confirmed = True
+
         if not pos_target:
             self.log("组合识别未命中：未同时确认 skillcar.png + liketag.png，禁止使用单图兜底，重新选品牌...")
             self._save_race_car_debug(
@@ -359,6 +387,27 @@ class RaceMixin:
                     interval=0.25,
                     fast_mode=False
                 )
+                if pos_target:
+                    self.detail_state_confirmed = True
+
+                if not pos_target and not self.detail_state_confirmed:
+                    self.log("当前页面未找到车辆，尝试按 P 切换详情状态(SendMessage强发)...")
+                    self.hw_press("p", use_send=True)
+                    time.sleep(0.6)
+                    pos_target = self.wait_for_image_with_element_multi(
+                        "skillcar.png",
+                        "liketag.png",
+                        region=self.regions["全界面"],
+                        main_threshold=0.75,
+                        like_threshold=0.7,
+                        final_threshold=0.7,
+                        timeout=4,
+                        interval=0.25,
+                        fast_mode=False
+                    )
+                    if pos_target:
+                        self.detail_state_confirmed = True
+
                 if not pos_target:
                     self.log("组合识别未命中：未同时确认 skillcar.png + liketag.png，本页跳过，禁止单图兜底。")
                     self._save_race_car_debug(
@@ -402,7 +451,7 @@ class RaceMixin:
 
                 pos = self.wait_for_any_image_gray(
                     ["start.png", "startw.png"],
-                    region=self.regions["左下"],
+                    region=self.regions["左"],
                     threshold=0.75,
                     timeout=0.7,
                     interval=0.2,

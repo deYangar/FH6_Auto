@@ -33,7 +33,7 @@ if exist dist rmdir /s /q dist
 if exist "%APP_NAME%.spec" del /f /q "%APP_NAME%.spec"
 
 echo [INFO] Check modules...
-python -c "import config,constants,input_handler,vision,recovery,race_logic,buy_logic,cj_logic,anti_cheat,focus_hook_manager" 2>nul
+python -c "import config,constants,input_handler,vision,recovery,race_logic,buy_logic,cj_logic,sell_logic,anti_cheat,focus_hook_manager" 2>nul
 if errorlevel 1 (
     echo [ERROR] Module import failed. Installing deps...
     python -m pip install -r requirements.txt

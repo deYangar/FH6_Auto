@@ -279,6 +279,10 @@ class CJMixin:
             return True
 
         self.update_running_ui("超级抽奖", self.cj_counter, target_count)
+
+        # ====== 任务内锁定，每次进入任务强制重置详情状态锁 ======
+        self.detail_state_confirmed = False
+
         # 【新增】:初始化记忆页码
         if not hasattr(self, 'memory_car_page'):
             self.memory_car_page = 0
@@ -322,9 +326,32 @@ class CJMixin:
         while self.cj_counter < target_count:
             if not self.is_running:
                 return False
-            self.log("进入我的车辆.")
-            self.hw_press("enter")
-            time.sleep(2.0)
+            # ====== 根据下拉框判断进入方式 ======
+            cj_mode_str = "模式1"
+            if hasattr(self, "opt_cj_mode"):
+                cj_mode_str = self.opt_cj_mode.get()
+
+            if "模式1" in cj_mode_str:
+                self.log("进入我的车辆.")
+                self.hw_press("enter")
+                time.sleep(2.0)
+            else:
+                self.log("进入设计与喷涂.")
+                pos_dp = self.wait_for_image_gray("DandP.png", region=self.regions["全界面"], threshold=0.70, timeout=5, interval=0.3, fast_mode=True)
+                if pos_dp:
+                    self.game_click(pos_dp)
+                    time.sleep(0.5)
+                else:
+                    self.log("未找到设计与喷涂")
+                    return False
+                pos_choose = self.wait_for_image_gray("choosecar.png", region=self.regions["全界面"], threshold=0.70, timeout=5, interval=0.3, fast_mode=True)
+                if pos_choose:
+                    self.game_click(pos_choose)
+                    time.sleep(2.0)
+                else:
+                    self.log("未找到选择车辆(choosecar.png)")
+                    return False
+            # ===============================================
             self.hw_press("backspace")
             time.sleep(1.0)
 
@@ -383,11 +410,25 @@ class CJMixin:
             found_car = False
             current_page = jump_pages # 记录当前所在的真实页码
 
-            # 最大翻页次数扣除已经跳过的页数
-            for _ in range(85 - jump_pages):
+            # 最多看 3 页（第 0/1/2 页），每页的顺序：搜索 → P切换重搜 → 不行就翻下一页
+            max_pages = 3
+            for page_idx in range(max_pages):
                 if not self.is_running:
                     return False
-                pos_target = self.wait_for_new_consumable_car_strict(timeout=1.5, interval=0.2)
+                pos_target = self.wait_for_new_consumable_car_strict(timeout=3.0, interval=0.2)
+
+                if pos_target:
+                    self.detail_state_confirmed = True
+
+                # 本页没找到→按 P 切换详情状态重搜一次
+                if not pos_target:
+                    self.log(f"第 {page_idx+1} 页未找到车辆，按 P 切换详情状态重搜(SendMessage强发)...")
+                    time.sleep(0.3)
+                    self.hw_press("p", use_send=True)
+                    time.sleep(1.0)
+                    pos_target = self.wait_for_new_consumable_car_strict(timeout=3.0, interval=0.2)
+                    if pos_target:
+                        self.detail_state_confirmed = True
 
                 if pos_target:
                     self._save_car_select_debug(
@@ -469,18 +510,36 @@ class CJMixin:
             self.log("尝试寻找'上车'按钮...")
 
             pos_rc = None
+            mode2 = ("模式2" in cj_mode_str)
             if not already_boarding:
-                pos_rc = self.wait_for_image_gray("rc.png", region=self.regions["全界面"], threshold=0.70, timeout=0.5, interval=0.1, fast_mode=True)
+                if mode2:
+                    # ===== 模式2: 从设计与喷漆进入 =====
+                    # 上游逻辑: game_click(pos_target) → sleep(0.5) → Enter → sleep(1.0) → 进入升级循环
+                    # fork 逻辑: SendMessage 点车 + line 475 的 Enter 已等价上游 game_click + Enter
+                    # 所以这里不需要再补 Enter，直接交给 _wait_for_uandt_ready 走升级循环即可。
+                    self._save_car_select_debug(
+                        "mode2_after_enter_select",
+                        pos_target=pos_target,
+                        pos_rc=None,
+                        note="模式2: 选车后不补 Enter，直接进入升级循环",
+                        extra={"current_page": current_page}
+                    )
+                else:
+                    # ===== 模式1: 原逻辑 - 找 rc.png 按钮 =====
+                    pos_rc = self.wait_for_image_gray("rc.png", region=self.regions["全界面"], threshold=0.70, timeout=0.5, interval=0.1, fast_mode=True)
             self._save_car_select_debug(
                 "after_rc_search",
                 pos_target=pos_target,
                 pos_rc=pos_rc,
                 note="已完成上车按钮识别",
-                extra={"current_page": current_page, "rc_found": bool(pos_rc)}
+                extra={"current_page": current_page, "rc_found": bool(pos_rc), "mode2": mode2}
             )
 
             if already_boarding:
                 self.log("Enter 已触发上车/切车过场，跳过 rc.png 点击，继续等待车辆菜单。")
+            elif mode2:
+                # 模式2 对齐上游: 选车+Enter 后直接交给 _wait_for_uandt_ready 循环按 ESC找“升级与调校”。
+                self.log("模式2: 跳过 rc.png 搜索，直接等待“升级与调校”菜单。")
             elif pos_rc:
                 self.log(f"点击上车: {pos_rc}")
                 self.game_click(pos_rc)
@@ -494,29 +553,19 @@ class CJMixin:
                 )
                 time.sleep(4.2)  # 点击后等待上车/菜单完全加载，避免过早点升级与调校
             else:
-                self.log("SendMessage 强点+Enter 后仍未找到'上车'按钮，补一次 Enter 后复查。")
+                # 对齐上游: 没找到 rc.png 就直接双 Enter 上车
+                self.log("未找到上车按钮，按上游逻辑双 Enter 上车。")
                 self.hw_press("enter")
                 time.sleep(1.0)
-                pos_rc = self.wait_for_image_gray("rc.png", region=self.regions["全界面"], threshold=0.70, timeout=1.2, interval=0.15, fast_mode=True)
+                self.hw_press("enter")
+                time.sleep(2.0)
                 self._save_car_select_debug(
-                    "after_extra_enter_rc_search",
+                    "after_double_enter_boarding",
                     pos_target=pos_target,
-                    pos_rc=pos_rc,
-                    note="SendMessage 强点+Enter 未出现上车按钮，已补一次 Enter 后复查",
-                    extra={"current_page": current_page, "rc_found": bool(pos_rc)}
+                    pos_rc=None,
+                    note="未找到 rc.png，已双 Enter 上车",
+                    extra={"current_page": current_page}
                 )
-                if not pos_rc:
-                    if self._is_boarding_transition():
-                        self.log("补 Enter 后未找到 rc.png，但检测到已进入上车/切车过场，继续等待车辆菜单。")
-                        time.sleep(4.5)
-                    else:
-                        self.log("补 Enter 后仍未找到'上车'按钮，且未检测到上车过场；停止以避免误上车。")
-                        return False
-                else:
-                    self.log(f"补 Enter 后点击上车: {pos_rc}")
-                    self.game_click(pos_rc)
-                    time.sleep(5.0)
-
 
             pos_sjy = self._wait_for_uandt_ready(timeout=16.0, stable_frames=3, min_brightness=42.0, press_esc_when_missing=True)
 

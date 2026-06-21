@@ -117,11 +117,13 @@ class BackgroundInputManager:
         self._repeat_counts.pop(key.lower(), None)
         self._send_key(key, down=False)
 
-    def press(self, key, delay=0.08):
-        """单击按键（KEYDOWN + 可选 WM_CHAR + KEYUP）"""
-        self._send_key(key, down=True, is_repeat=False, send_char=True)
+    def press(self, key, delay=0.08, use_send=False):
+        """单击按键（KEYDOWN + 可选 WM_CHAR + KEYUP）
+        use_send=True 时用 SendMessage 同步发送，等价于 click(use_send=True) 的强点模式。
+        """
+        self._send_key(key, down=True, is_repeat=False, send_char=True, use_send=use_send)
         time.sleep(delay)
-        self._send_key(key, down=False)
+        self._send_key(key, down=False, use_send=use_send)
         time.sleep(0.02)
 
     def click(self, x, y, double=False, use_send=False, clicks=None, hold=0.08, gap=0.08):
@@ -169,13 +171,14 @@ class BackgroundInputManager:
         self.press(confirm_key, delay=0.15)
         time.sleep(0.2)
 
-    def _send_key(self, key, down=True, is_repeat=False, send_char=False):
+    def _send_key(self, key, down=True, is_repeat=False, send_char=False, use_send=False):
         key = key.lower()
         vk = VK_MAP.get(key)
         if vk is None:
             return
 
         scan, extended = SCAN_MAP.get(key, (0, False))
+        sender = win32gui.SendMessage if use_send else win32gui.PostMessage
 
         if down:
             if is_repeat:
@@ -186,14 +189,14 @@ class BackgroundInputManager:
             else:
                 # 首次 KEYDOWN: prev_state=0, trans=0, repeat=1
                 lParam = _build_lparam(scan, extended, 1, prev_state=0, trans_state=0)
-            win32gui.PostMessage(self.hwnd, win32con.WM_KEYDOWN, vk, lParam)
+            sender(self.hwnd, win32con.WM_KEYDOWN, vk, lParam)
             # 数字/字母发 WM_CHAR（文本输入框需要）
             if send_char and (0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A):
-                win32gui.PostMessage(self.hwnd, win32con.WM_CHAR, vk, lParam)
+                sender(self.hwnd, win32con.WM_CHAR, vk, lParam)
         else:
             # KEYUP: prev_state=1, trans=1, repeat=1
             lParam = _build_lparam(scan, extended, 1, prev_state=1, trans_state=1)
-            win32gui.PostMessage(self.hwnd, win32con.WM_KEYUP, vk, lParam)
+            sender(self.hwnd, win32con.WM_KEYUP, vk, lParam)
 
     def _repeat_loop(self):
         """每 50ms 给所有按住的键重发 KEYDOWN"""

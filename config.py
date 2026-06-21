@@ -48,22 +48,18 @@ def get_internal_dir():
 
 APP_DIR = get_app_dir()
 INTERNAL_DIR = get_internal_dir()
-CONFIG_DIR = os.path.join(APP_DIR, "config")
 USER_CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 LOG_FILE = os.path.join(APP_DIR, "bot_log.txt")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
 TEMPLATE_CACHE_FILE = os.path.join(CACHE_DIR, "template_cache.pkl")
 TEMPLATE_META_FILE = os.path.join(CACHE_DIR, "template_meta.json")
-CURRENT_VERSION = "1.1.6.3"
+CURRENT_VERSION = "1.1.6.4"
 
 def auto_extract_configs():
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+    # 只从 APP_DIR 下的历史文件名迁移，不再使用 config/ 子目录
     old_configs = [
         os.path.join(APP_DIR, "bot_config.json"),
         os.path.join(APP_DIR, "bot-config.json"),
-        os.path.join(CONFIG_DIR, "bot-config.json"),
-        os.path.join(CONFIG_DIR, "bot_config.json"),
-        os.path.join(CONFIG_DIR, "config.json")
     ]
     for old_path in old_configs:
         if os.path.exists(old_path):
