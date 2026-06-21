@@ -118,7 +118,23 @@ forza_test_tool/
 - 删除 `UPSTREAM_UPDATE_PLAN.md`（已执行完的合并方案）
 - 删除 `vision.py.backup_*`（备份文件）
 - 删除 `_fix_p.py`（临时脚本）
+- vision.py 删除 6 个死代码函数共 171 行
 - `.gitignore` 新增 `_debug_*/`、`*.backup_*`、`_review_upstream/`、`UPSTREAM_UPDATE_PLAN.md`
+
+### 优化：超级抽奖选车翻页 2→3 页
+- `cj_logic.py` `max_pages = 2` → `3`
+
+### 更新：Focus Hook DLL (18:15)
+- 从 `focus_hook` 项目复制新版 DLL 到 `assets/`
+- 新版 hook 8 个 API（新增 GetFocus/GetActiveWindow/GetCursorPos/SetCursor）
+- 新增调试日志写入 `%TEMP%\focus_hook_debug.log`
+- 卸载时恢复 WndProc + 发送 WM_ACTIVATE 刷新窗口状态
+
+### 修复：1600×900 分辨率下 race_logic 选车识别失败 (18:36)
+- **现象**：用户 skillcar.png 模板匹配 0.388，识别到黑色空位
+- **根因**：`get_scales_to_try(fast_mode=True)` 只取前 8 个缩放，1600×900 下 scale=1.0 排第 10 被排除
+- **修复**：在 primary_scale 微调后、其它来源前优先插入 `1.0`，确保两种分辨率（1600/1778）下 1.0 都在 fast_mode 前 8 个里
+- **验证**：用户模板 scale=1.0 得分 0.8862 ← 完美匹配
 - **2026-06-19 超级抽奖计数器/误选车型修复**: 用户反馈成功专精后计数器不增加，且在没有符合条件车辆后误选“全新但非 22B/B600”的 SVX。修复：`cj_counter += 1` 移到“已进入车辆专精并执行技能路径”之后、`SPNE` 提前 return 之前，避免成功处理车辆不计数；`find_new_consumable_car_strict()` 的 B600 匹配阈值从 0.58 提高到 0.72；新增 `_verify_target_point_b600()`，车卡点击后、Enter 上车前二次校验 B600。后续用户反馈严格识别已高置信命中 B600，但点击/hover 后小区域二次匹配误杀；修复为优先使用严格识别阶段保存的 `last_strict_car_meta.class_score`（点击前置信度）通过二次校验，只有严格阶段分数不足时才用扩大后的局部区域兜底匹配。列表未找到满足【全新+B600+目标车型】条件的车辆时返回 `True` 结束超抽步骤，不再触发全局恢复。车辆列表右移翻页节奏放慢：单次 Right delay 0.10s、间隔 0.22s，翻页后等待 0.65s，避免列表滑动未完成就识别/点击。
 - **2026-06-19 全部计数器审查**: 用户要求不只修超抽，还要检查循环跑图/批量买车/其他计数器。审查结论：跑图在 `restart.png` 完赛后才 `race_counter += 1`，超时重开不计数，逻辑基本正确；买车在一套购买确认键序列后 `car_counter += 1`，逻辑基本正确。增强：为跑图、买车、超抽都增加明确日志 `xxx计数 +1: 当前/目标`；修复 UI 待机状态会把任务进度/大循环重置成 `0/0` 的问题，改为停止/完成时保留最后计数，新任务开始时再初始化。用户反馈顶部任务卡片“执行: 0/99”一直不变，根因是 `update_running_ui()` 只更新运行面板 `lbl_runtime_progress`，未同步更新 `lbl_race/lbl_car/lbl_cj`；已增加任务名到顶部标签映射，三个卡片的“执行: x/y”随业务计数同步刷新。
 - **2026-06-19 循环跑图选车兜底删除/调试记录/组合识别修复**: 用户反馈循环跑图日志显示“组合识别未命中”后又用 `skillcar.png` 单图兜底命中，导致未选正确车辆就开始跑图。解释：组合识别是同时匹配 `skillcar.png + liketag.png`，本应作为目标车辆确认；原代码组合失败后降级到单图 `skillcar.png` 阈值 0.68，过于危险。已删除两处单图兜底：组合未命中时只重新选品牌/翻页继续找组合，最终仍无组合目标则失败停止，禁止仅凭 `skillcar.png` 开始跑图。新增 `debug_race_car_select/`：组合识别未命中时保存 `screen_raw.png`、`screen_annotated.png`、`meta.json`，标注/记录 `skillcar.png`、`liketag.png` 全屏最佳分数、缩放、位置，以及最佳 skillcar 附近的 liketag 分数。用户提供 meta 显示 `skillcar.png` 最佳缩放 1.137，`liketag_near_skillcar` 最佳缩放 0.711，证明失败原因有两层：一是组合识别强制主图和子元素使用同一 scale；二是循环跑图调用组合识别时 `fast_mode=True` 只取前 8 个缩放，漏掉 1600 基准对应的 1.137。已修改 `find_image_with_element_multi()`，主图 skillcar 使用主缩放，子元素 liketag 在主图附近独立尝试全部缩放，并在命中日志输出“主缩放/标签缩放”；循环跑图两处组合识别改为 `fast_mode=False`、timeout 4s，确保能尝试 1.137 等完整缩放。用户指出全屏最佳 liketag 可能落到 BRZ 上，真正应该看同一车卡内 liketag；已增强 `debug_race_car_select` 标注：红框=skillcar，全屏绿框=全屏最佳 liketag（仅参考），黄框=skillcar 附近/同车卡内最佳 liketag（正式组合依据）。
