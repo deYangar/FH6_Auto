@@ -280,6 +280,8 @@ class VisionMixin:
         add_scale(primary_scale * 1.05)
         add_scale(primary_scale * 0.92)
         add_scale(primary_scale * 1.08)
+        # 1.0 必须在 fast_mode 前 8 个里（很多模板按原生分辨率截）
+        add_scale(1.0)
         # 再兼容其它来源
         for bw in [1920, 1600]:
             s = curr_w / bw
@@ -287,7 +289,7 @@ class VisionMixin:
             add_scale(s * 0.98)
             add_scale(s * 1.02)
         # 最后兜底常用比例
-        for s in [1.0, 0.95, 1.05, 0.9, 1.1, 0.85, 1.15, 0.8, 0.75, 0.7]:
+        for s in [0.95, 1.05, 0.9, 1.1, 0.85, 1.15, 0.8, 0.75, 0.7]:
             add_scale(s)
         if fast_mode:
             return scales[:8]
