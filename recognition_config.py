@@ -40,13 +40,29 @@ DEFAULT_RECOGNITION_PROFILES = {
     "matcher.buy_used_fast": {"threshold": 0.70, "interval": 0.25, "fast_mode": True},
 }
 
+# 缓存：用户 profiles 只解析一次
+_merged_cache = {}
+_cache_initialized = False
+
+
+def _build_merged_profiles(user_profiles):
+    """预合并用户覆盖到默认配置，避免每次调用都 deepcopy。"""
+    merged = {}
+    for key, default_vals in DEFAULT_RECOGNITION_PROFILES.items():
+        merged[key] = dict(default_vals)
+        user_vals = user_profiles.get(key)
+        if isinstance(user_vals, dict):
+            merged[key].update(user_vals)
+    return merged
+
 
 def get_recognition_profile(bot, key, **overrides):
-    profile = copy.deepcopy(DEFAULT_RECOGNITION_PROFILES.get(key, {}))
-    user_profiles = getattr(bot, "config", {}).get("recognition_profiles", {}) or {}
-    user_profile = user_profiles.get(key, {})
-    if isinstance(user_profile, dict):
-        profile.update(user_profile)
+    global _cache_initialized, _merged_cache
+    if not _cache_initialized:
+        user_profiles = getattr(bot, "config", {}).get("recognition_profiles", {}) or {}
+        _merged_cache = _build_merged_profiles(user_profiles)
+        _cache_initialized = True
+    profile = dict(_merged_cache.get(key, {}))
     if overrides:
         profile.update({k: v for k, v in overrides.items() if v is not None})
     return profile

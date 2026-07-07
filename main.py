@@ -6,20 +6,17 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import json
 import time
 import ctypes
-import subprocess
 import tkinter as tk
 import customtkinter as ctk
 ctk.deactivate_automatic_dpi_awareness()
 ctk.set_widget_scaling(1.0)
 ctk.set_window_scaling(1.0)
 import cv2
-import numpy as np
 import pyautogui
 import pydirectinput
 from pynput import keyboard
 from PIL import Image, ImageGrab
 import win32gui
-import pickle
 import threading
 import fh6_backend
 import focus_hook_manager
@@ -52,7 +49,7 @@ class FH_UltimateBot(
     def __init__(self):
         super().__init__()
         #窗口相关
-        self.title(f"FH6Auto by YSTO v{CURRENT_VERSION}")
+        self.title(f"FH6Auto v{CURRENT_VERSION}")
         self.geometry("1360x760")
         self.minsize(1180, 700)
         self.attributes("-topmost", False)
@@ -99,9 +96,6 @@ class FH_UltimateBot(
             auto_extract_images()
 
             self.prepare_template_cache()
-            #self.use_ocr = self.config.get("use_ocr", True)
-            #if self.use_ocr:
-            #    self.init_ocr_engine()
         threading.Thread(target=background_init, daemon=True).start()
 
         #加载配置文件
@@ -251,7 +245,6 @@ class FH_UltimateBot(
             if hasattr(self, "entry_race_timeout"):
                 self.config["race_timeout"] = max(60, int(self.entry_race_timeout.get()))
             self.config["share_code"] = "".join(c for c in self.entry_share.get() if c.isdigit())
-            #self.config["base_width"] = int(self.entry_base_w.get())
             self.config["next_1"] = int(self.entry_next1.get())
             self.config["next_2"] = int(self.entry_next2.get())
             self.config["next_3"] = int(self.entry_next3.get())
@@ -679,8 +672,6 @@ class FH_UltimateBot(
             height=28,
             command=self.start_test_boot
         )
-        #self.btn_test_boot.pack(side="left", padx=(0, 20))
-
         # =================================
 
 
@@ -744,11 +735,6 @@ class FH_UltimateBot(
             state="disabled",
         )
         self.btn_runtime_stop.pack(side="right", padx=(0, 12), pady=12)
-
-        #ctk.CTkLabel(self.global_settings_frame, text="图片原宽(不要修改):").pack(side="left", padx=(10, 5))
-        #self.entry_base_w = ctk.CTkEntry(self.global_settings_frame, width=70, height=28, justify="center")
-        #self.entry_base_w.insert(0, str(self.config.get("base_width", 2560)))
-        #self.entry_base_w.pack(side="left", padx=(0, 20))
 
         self.entry_next1.bind("<FocusOut>", lambda e: self.normalize_step_entry(self.entry_next1, 2))
         self.entry_next2.bind("<FocusOut>", lambda e: self.normalize_step_entry(self.entry_next2, 3))
@@ -1370,10 +1356,7 @@ class FH_UltimateBot(
         self.stop_anti_cheat_heartbeat()
         self.finish_diagnostic_trace_session()
 
-        for key in DIK_CODES.keys():
-            self.hw_key_up(key)
-
-        for key in ["w", "e", "y", "enter", "esc", "up", "down", "left", "right", "space", "backspace"]:
+        for key in list(DIK_CODES.keys()) + ["w", "e", "y", "enter", "esc", "up", "down", "left", "right", "space", "backspace"]:
             self.hw_key_up(key)
 
         try:

@@ -444,7 +444,23 @@ class RaceMixin:
                 self.log("找不到赛事起点,退出跑图。")
                 return False
 
-            self.game_click(pos, confirm_key="enter")
+            self.game_click(pos)
+            time.sleep(0.5)
+
+            # 检测是否还在菜单（点击未生效）
+            still_here = self.find_any_image_gray(
+                ["start.png", "startw.png"],
+                region=self.regions["左"],
+                threshold=0.75,
+                fast_mode=True
+            )
+            if still_here:
+                self.log("点击未生效，重新点击 + Enter 确认...")
+                self.game_click(still_here)
+                time.sleep(0.5)
+                self.hw_press("enter")
+                time.sleep(1.0)
+
             time.sleep(4.0)
             self.hw_key_down("w")
             self.hw_key_down("up")

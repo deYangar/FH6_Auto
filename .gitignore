@@ -44,6 +44,7 @@ car_crops/
 patch_*.py
 cleanup.py
 PROGRESS.md
+flow_common.py
 
 # IDE / OS files
 .idea/
