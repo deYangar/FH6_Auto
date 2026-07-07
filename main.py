@@ -70,6 +70,7 @@ class FH_UltimateBot(
         self.current_thread = None
         self.is_paused = False  # <--- 【新增】全局暂停状态
         self.game_hwnd = None   # <--- 【后台化】游戏窗口句柄
+        self.diagnostic_trace = None  # 诊断会话（None=未开启）
         self.bg_input = None    # <--- 【后台化】后台输入管理器
         self.focus_hook_info = None
         self.protocol("WM_DELETE_WINDOW", self.on_app_close)
@@ -116,7 +117,6 @@ class FH_UltimateBot(
         self.log("免责声明:本脚本仅供 Python 自动化技术交流与学习使用。请勿用于商业盈利或破坏游戏平衡,因使用本脚本造成的账号封禁等损失,由使用者自行承担。")
         self.log("工具运行目录不要有中文")
         self.log("默认刷图车辆:【斯巴鲁Impreza 22B-STi Version】【调校S2  900】【保持默认涂装】【收藏车辆】")
-        self.log("启动前先将键盘设置为【英文键盘】")
         self.log("游戏设置为【自动转向】【自动挡】,游戏语言设置为【简体中文】")
         self.log("大部分以图像识别作为引导,减少机器盲目操作的风险,但仍无法完全避免,使用前请做好准备")
 
@@ -220,6 +220,7 @@ class FH_UltimateBot(
             "cj_mode": 1,
             "auto_close_game": False,
             "auto_shutdown": False,
+            "diagnostic_mode": False,
             "sell_count": 10,
             "chk_4": True,
             "next_4": 1
@@ -277,6 +278,8 @@ class FH_UltimateBot(
             self.config["auto_close_game"] = self.var_auto_close.get()
         if hasattr(self, "var_auto_shutdown"):
             self.config["auto_shutdown"] = self.var_auto_shutdown.get()
+        if hasattr(self, "var_diagnostic_mode"):
+            self.config["diagnostic_mode"] = self.var_diagnostic_mode.get()
         try:
             with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
@@ -653,6 +656,15 @@ class FH_UltimateBot(
             command=self.save_config,
         )
         self.cb_auto_shutdown.pack(side="left", padx=(0, 16))
+        # ====== 诊断模式 ======
+        self.var_diagnostic_mode = ctk.BooleanVar(value=self.config.get("diagnostic_mode", False))
+        self.cb_diagnostic_mode = ctk.CTkCheckBox(
+            self.global_settings_frame,
+            text="诊断模式",
+            variable=self.var_diagnostic_mode,
+            command=self.save_config,
+        )
+        self.cb_diagnostic_mode.pack(side="left", padx=(0, 16))
         ctk.CTkLabel(self.global_settings_frame, text="启动命令:").pack(side="left", padx=(0, 5))
         self.le_restart_cmd = ctk.CTkEntry(self.global_settings_frame, height=28, corner_radius=6)
         self.le_restart_cmd.insert(0, self.config.get("restart_cmd", "start steam://run/2483190"))
@@ -761,6 +773,31 @@ class FH_UltimateBot(
         )
         self.btn_stop.pack(side="left", fill="y", padx=(0, 10))
 
+        # ====== 日志级别筛选 + 导出 ======
+        log_toolbar = ctk.CTkFrame(self.bottom_frame, fg_color="transparent")
+        log_toolbar.pack(side="left", fill="y", padx=(0, 6))
+        ctk.CTkLabel(log_toolbar, text="级别", font=ctk.CTkFont(size=12)).pack(side="top", pady=(2, 0))
+        self.log_level_var = ctk.StringVar(value="ALL")
+        self.log_level_menu = ctk.CTkOptionMenu(
+            log_toolbar,
+            values=["ALL", "INFO", "WARN", "ERROR", "DEBUG"],
+            variable=self.log_level_var,
+            width=80,
+            height=24,
+            font=ctk.CTkFont(size=12),
+            command=self._apply_log_filter,
+        )
+        self.log_level_menu.pack(side="top", pady=(2, 4))
+        self.btn_export_log = ctk.CTkButton(
+            log_toolbar,
+            text="导出",
+            width=80,
+            height=24,
+            font=ctk.CTkFont(size=12),
+            command=self._export_log,
+        )
+        self.btn_export_log.pack(side="top", pady=(0, 2))
+
         self.log_box = ctk.CTkTextbox(
             self.bottom_frame,
             state="disabled",
@@ -773,11 +810,16 @@ class FH_UltimateBot(
             font=ctk.CTkFont(size=15),
         )
         self.log_box.pack(side="left", fill="both", expand=True)
-        # 右键菜单：复制 / 复制全部
+        # 右键菜单：复制 / 复制全部 / 导出日志
         self._log_menu = tk.Menu(self, tearoff=0)
         self._log_menu.add_command(label="复制选中", command=self._copy_log_selection)
         self._log_menu.add_command(label="复制全部", command=self._copy_log_all)
+        self._log_menu.add_separator()
+        self._log_menu.add_command(label="导出日志到文件", command=self._export_log)
         self.log_box.bind("<Button-3>", self._show_log_menu)
+
+        # 日志缓冲（用于级别筛选）
+        self._log_buffer = []
 
     def _show_log_menu(self, event):
         try:
@@ -933,20 +975,244 @@ class FH_UltimateBot(
 
         self.config["skill_dirs"] = valid_dirs
 
-    def log(self, message):
+    def log(self, message, level=None):
+        # 自动推断日志级别
+        if level:
+            resolved_level = str(level).upper()
+        else:
+            text = str(message or "")
+            upper_text = text.upper()
+            if upper_text.startswith("[ERROR]") or "致命" in text or "异常" in text:
+                resolved_level = "ERROR"
+            elif upper_text.startswith("[WARN]") or "警告" in text or "失败" in text or "未找到" in text:
+                resolved_level = "WARN"
+            elif upper_text.startswith("[DEBUG]") or "[Calibration]" in text or "[Diagnostic]" in text:
+                resolved_level = "DEBUG"
+            else:
+                resolved_level = "INFO"
+
         curr_time = time.strftime("%H:%M:%S")
-        full_msg = f"[{curr_time}] {message}"
+        if resolved_level == "INFO":
+            full_msg = f"[{curr_time}] {message}"
+        else:
+            full_msg = f"[{curr_time}] [{resolved_level}] {message}"
+
+        # 缓存日志用于级别筛选
+        self._log_buffer.append((resolved_level, full_msg))
+        if len(self._log_buffer) > 2000:
+            self._log_buffer = self._log_buffer[-1500:]
+
+        # 诊断日志写入文件
+        self.record_diagnostic_log(resolved_level, message, ts=time.strftime("%Y-%m-%d %H:%M:%S"))
 
         def write_ui():
             try:
-                # 写入下方大界面的日志
+                # 级别筛选
+                current_filter = getattr(self, "log_level_var", None)
+                if current_filter:
+                    filter_level = current_filter.get()
+                    if filter_level != "ALL" and resolved_level != filter_level:
+                        return
                 self.log_box.configure(state="normal")
                 self.log_box.insert("end", full_msg + "\n")
+                self._log_line_count = getattr(self, "_log_line_count", 0) + 1
+                if self._log_line_count > getattr(self, "_log_trim_threshold", 1200):
+                    keep_lines = getattr(self, "_log_keep_lines", 800)
+                    self.log_box.delete("1.0", f"end-{keep_lines + 1}lines")
+                    self._log_line_count = keep_lines
                 self.log_box.see("end")
                 self.log_box.configure(state="disabled")
             except Exception:
                 pass
         self.ui_call(write_ui)
+
+    def _apply_log_filter(self, choice=None):
+        """根据级别筛选重新渲染日志框。"""
+        filter_level = self.log_level_var.get()
+        def rebuild():
+            try:
+                self.log_box.configure(state="normal")
+                self.log_box.delete("1.0", "end")
+                for lvl, msg in self._log_buffer:
+                    if filter_level == "ALL" or lvl == filter_level:
+                        self.log_box.insert("end", msg + "\n")
+                self.log_box.see("end")
+                self.log_box.configure(state="disabled")
+            except Exception:
+                pass
+        self.ui_call(rebuild)
+
+    def _export_log(self):
+        """导出当前日志到文件。"""
+        try:
+            export_dir = os.path.join(APP_DIR, "debug_logs")
+            os.makedirs(export_dir, exist_ok=True)
+            filename = f"log_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+            filepath = os.path.join(export_dir, filename)
+            with open(filepath, "w", encoding="utf-8-sig") as f:
+                for lvl, msg in self._log_buffer:
+                    f.write(msg + "\n")
+            self.log(f"日志已导出到: {filepath}")
+        except Exception as e:
+            self.log(f"导出日志失败: {e}", level="ERROR")
+
+    def record_diagnostic_log(self, level, message, ts=None):
+        """写入诊断日志到 JSONL 文件（仅诊断模式开启时）。"""
+        trace = getattr(self, "diagnostic_trace", None)
+        if not trace:
+            return
+        event = {
+            "ts": ts or time.strftime("%Y-%m-%d %H:%M:%S"),
+            "kind": "log",
+            "level": str(level or "INFO").upper(),
+            "message": str(message or ""),
+        }
+        try:
+            with open(trace["logs_path"], "a", encoding="utf-8-sig") as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except Exception:
+            return
+        trace["log_count"] += 1
+        trace["log_levels"][event["level"]] = trace["log_levels"].get(event["level"], 0) + 1
+
+    def capture_diagnostic_snapshot(self, name, *, region=None, image_bgr=None, reason=None, level="WARN", meta=None, dedupe_key=None):
+        """保存诊断截图（仅诊断模式开启时）。"""
+        trace = getattr(self, "diagnostic_trace", None)
+        if not trace:
+            return None
+        capture_key = dedupe_key or name
+        if capture_key in trace["capture_keys"]:
+            return None
+        try:
+            frame = image_bgr if image_bgr is not None else self.capture_region(region)
+        except Exception:
+            return None
+        if frame is None:
+            return None
+        safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(name or "capture"))
+        capture_index = trace["capture_count"] + 1
+        filename = f"{capture_index:03d}_{safe_name}.png"
+        file_path = os.path.join(trace["captures_dir"], filename)
+        try:
+            cv2.imwrite(file_path, frame)
+        except Exception:
+            return None
+        trace["capture_count"] = capture_index
+        trace["capture_keys"].add(capture_key)
+        trace["captures"].append({
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "kind": "capture",
+            "name": name,
+            "level": str(level or "WARN").upper(),
+            "reason": reason,
+            "file": file_path,
+            "region": region,
+            "meta": meta or {},
+        })
+        return file_path
+
+    def start_diagnostic_trace_session(self, session_name):
+        """启动诊断会话，创建报告目录和 JSONL 文件。"""
+        if not bool(self.config.get("diagnostic_mode", False)):
+            self.diagnostic_trace = None
+            return
+        report_dir = os.path.join(APP_DIR, "diagnostic_reports", f"{time.strftime('%Y%m%d_%H%M%S')}_{session_name}")
+        os.makedirs(report_dir, exist_ok=True)
+        captures_dir = os.path.join(report_dir, "captures")
+        os.makedirs(captures_dir, exist_ok=True)
+        self.diagnostic_trace = {
+            "session_name": session_name,
+            "report_dir": report_dir,
+            "events_path": os.path.join(report_dir, "events.jsonl"),
+            "logs_path": os.path.join(report_dir, "logs.jsonl"),
+            "captures_dir": captures_dir,
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "event_count": 0,
+            "hit_count": 0,
+            "miss_count": 0,
+            "log_count": 0,
+            "log_levels": {},
+            "capture_count": 0,
+            "capture_keys": set(),
+            "captures": [],
+        }
+        self.log(f"[Diagnostic] 已开启诊断记录: {report_dir}", level="DEBUG")
+
+    def finish_diagnostic_trace_session(self):
+        """结束诊断会话，生成文本报告。"""
+        trace = getattr(self, "diagnostic_trace", None)
+        if not trace:
+            return
+        summary = {
+            "session_name": trace["session_name"],
+            "started_at": trace["started_at"],
+            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "event_count": trace["event_count"],
+            "hit_count": trace["hit_count"],
+            "miss_count": trace["miss_count"],
+            "log_count": trace["log_count"],
+            "log_levels": dict(trace["log_levels"]),
+            "capture_count": trace["capture_count"],
+        }
+        try:
+            with open(os.path.join(trace["report_dir"], "summary.json"), "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+        # 生成可读报告
+        try:
+            lines = [
+                "FH6Auto 诊断记录报告",
+                f"会话: {summary['session_name']}",
+                f"开始时间: {summary['started_at']}",
+                f"结束时间: {summary['finished_at']}",
+                "",
+                "一、整体结果",
+                f"- 总识图次数: {summary['event_count']}",
+                f"- 命中次数: {summary['hit_count']}",
+                f"- 未命中次数: {summary['miss_count']}",
+                f"- 日志条数: {summary['log_count']}",
+                f"- 失败截图数: {summary['capture_count']}",
+                "",
+                "二、日志等级统计",
+            ]
+            for lvl in ["INFO", "WARN", "ERROR", "DEBUG"]:
+                lines.append(f"- {lvl}: {summary['log_levels'].get(lvl, 0)}")
+            lines.append("")
+            lines.append("三、关键截图")
+            if trace["captures"]:
+                for idx, cap in enumerate(trace["captures"], 1):
+                    lines.append(f"{idx}. [{cap.get('level', '-')}] {cap.get('name', '-')} -> {os.path.basename(cap.get('file', '-'))}")
+                    if cap.get("reason"):
+                        lines.append(f"   原因: {cap['reason']}")
+            else:
+                lines.append("- 本次没有生成截图。")
+            lines.append("")
+            lines.append("四、运行日志")
+            # 读取日志文件
+            logs = []
+            if os.path.exists(trace["logs_path"]):
+                with open(trace["logs_path"], "r", encoding="utf-8-sig") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            logs.append(json.loads(line))
+                        except Exception:
+                            continue
+            if logs:
+                for idx, le in enumerate(logs, 1):
+                    lines.append(f"{idx}. [{le.get('ts', '-')}] [{le.get('level', 'INFO')}] {le.get('message', '')}")
+            else:
+                lines.append("- 无日志记录。")
+            report_txt = os.path.join(trace["report_dir"], "report.txt")
+            with open(report_txt, "w", encoding="utf-8-sig") as f:
+                f.write("\n".join(lines))
+        except Exception as e:
+            self.log(f"[Diagnostic] 生成报告失败: {e}", level="ERROR")
+        self.log(f"[Diagnostic] 诊断报告已保存: {trace['report_dir']}")
+        self.diagnostic_trace = None
 
     def start_pipeline(self, start_step):
         if self.is_running:
@@ -968,7 +1234,9 @@ class FH_UltimateBot(
 
         def runner():
             task_finished_normally = False
+            self.start_diagnostic_trace_session(f"pipeline_{start_step}")
             if not self.check_and_focus_game():
+                self.finish_diagnostic_trace_session()
                 self.stop_all()
                 return
 
@@ -1086,7 +1354,7 @@ class FH_UltimateBot(
                 if self.var_auto_shutdown.get() and self.is_running:
                     self.log("【任务圆满完成】触发自动关机！系统将在 3 分钟后关闭！")
                     self.log("提示：如需取消关机，请按 Win+R 键，输入 shutdown -a 并回车。")
-                    os.system("shutdown -s -t 180")
+                    os.system("shutdown -s -f -t 180")
             # ==============================================
             self.stop_all()
 
@@ -1100,6 +1368,7 @@ class FH_UltimateBot(
         self.is_running = False
         self.is_paused = False  # <--- 【新增】彻底停止时必须解除暂停锁
         self.stop_anti_cheat_heartbeat()
+        self.finish_diagnostic_trace_session()
 
         for key in DIK_CODES.keys():
             self.hw_key_up(key)

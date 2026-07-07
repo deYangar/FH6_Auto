@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 from constants import DIK_CODES
 from config import APP_DIR
+from recognition_config import get_recognition_profile
 
 
 class RaceMixin:
@@ -154,16 +155,7 @@ class RaceMixin:
                         return
                     self.check_pause()
 
-                    pos = self.find_image_with_element_multi(
-                        "newCC.png",
-                        "newcartag.png",
-                        region=self.regions["全界面"],
-                        main_threshold=0.70,
-                        like_threshold=0.70,
-                        final_threshold=0.70,
-                        fast_mode=True,
-                        mask_areas=mask_areas
-                    )
+                    pos = self.wait_for_new_consumable_car_strict(timeout=3.0, interval=0.2)
 
                     if not pos:
                         self.log(f"第 {i + 1} 次查找:未找到新的目标,测试结束。")
@@ -287,38 +279,54 @@ class RaceMixin:
         self.hw_press("enter")
         time.sleep(1.5)
 
-        pos_ck = self.wait_for_image_gray(
-            "VEI.png",
-            region=self.regions["下"],
-            threshold=0.75,
-            timeout=20,
-            interval=1.0,
-            fast_mode=True
-        )
-        if not pos_ck:
-            self.log("链接超时")
-            return False
+        # 蓝图搜索结果检测：循环检查 racenotfound（蓝图失效）和 VEI（赛事信息）
+        blueprint_result = None
+        blueprint_wait_deadline = time.time() + 20
+        blueprint_last_wait_log = 0.0
+        profile_nf = get_recognition_profile(self, "race.blueprint_not_found")
+        profile_ready = get_recognition_profile(self, "race.blueprint_ready")
+        while self.is_running and time.time() < blueprint_wait_deadline:
+            now = time.time()
+            if now - blueprint_last_wait_log >= 2.0:
+                remaining = max(0.0, blueprint_wait_deadline - now)
+                self.log(f"蓝图搜索结果待确认，继续等待... 剩余 {remaining:.1f}s", level="DEBUG")
+                blueprint_last_wait_log = now
+
+            if self.find_image_gray(
+                "racenotfound.png",
+                region=self.regions["全界面"],
+                threshold=profile_nf["threshold"],
+                fast_mode=profile_nf["fast_mode"],
+                invert_mode=profile_nf["invert_mode"],
+            ):
+                return self.abort_invalid_blueprint_and_back_to_roam()
+
+            blueprint_result = self.find_image_gray(
+                "VEI.png",
+                region=self.regions["下"],
+                threshold=profile_ready["threshold"],
+                fast_mode=profile_ready["fast_mode"],
+                invert_mode=profile_ready["invert_mode"],
+            )
+            if blueprint_result:
+                self.log("已识别到目标赛事信息")
+                break
+
+            time.sleep(0.25)
+
+        if not blueprint_result:
+            return self.abort_invalid_blueprint_and_back_to_roam()
 
         self.hw_press("enter")
         time.sleep(2.0)
         self.hw_press("enter")
         time.sleep(2.0)
 
-        pos_target = self.wait_for_image_with_element_multi(
-            "skillcar.png",
-            "liketag.png",
-            region=self.regions["全界面"],
-            fast_mode=False,
-            main_threshold=0.75,
-            like_threshold=0.7,
-            final_threshold=0.7,
-            timeout=4,
-            interval=0.25
-        )
+        pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
         if pos_target:
             self.detail_state_confirmed = True
 
-        # 如果没找到，且之前从未确认过状态，则按下 P 键再找一次
+        # 如果没找到，而且之前从未确认过状态，则按下 P 键再找一次
         if not pos_target and not self.detail_state_confirmed:
             self.log("当前页面未找到车辆，尝试按 P 切换详情状态(SendMessage强发)...")
             time.sleep(0.3)
@@ -326,28 +334,17 @@ class RaceMixin:
             time.sleep(1.0)
             self.hw_press("p", use_send=True)
             time.sleep(0.6)
-            pos_target = self.wait_for_image_with_element_multi(
-                "skillcar.png",
-                "liketag.png",
-                region=self.regions["全界面"],
-                fast_mode=False,
-                main_threshold=0.7,
-                like_threshold=0.7,
-                final_threshold=0.7,
-                timeout=4,
-                interval=0.25
-            )
+            pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
             if pos_target:
                 self.detail_state_confirmed = True
 
         if not pos_target:
-            self.log("组合识别未命中：未同时确认 skillcar.png + liketag.png，禁止使用单图兜底，重新选品牌...")
+            self.log("严格匹配未命中：skillcar + liketag 固定位置验证未通过，重新选品牌...")
             self._save_race_car_debug(
                 "combo_miss_before_brand",
-                note="初次组合识别未命中，保存 skillcar/liketag 最佳匹配情况",
+                note="初次严格匹配未命中，保存 skillcar/liketag 最佳匹配情况",
                 extra={"main": "skillcar.png", "sub": "liketag.png"}
             )
-
         if not pos_target:
             self.log("未找到带 liketag 的目标车辆,重新选品牌...")
             self.hw_press("backspace")
@@ -376,17 +373,7 @@ class RaceMixin:
                 if not self.is_running:
                     return False
 
-                pos_target = self.wait_for_image_with_element_multi(
-                    "skillcar.png",
-                    "liketag.png",
-                    region=self.regions["全界面"],
-                    main_threshold=0.75,
-                    like_threshold=0.7,
-                    final_threshold=0.7,
-                    timeout=4,
-                    interval=0.25,
-                    fast_mode=False
-                )
+                pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
                 if pos_target:
                     self.detail_state_confirmed = True
 
@@ -394,25 +381,15 @@ class RaceMixin:
                     self.log("当前页面未找到车辆，尝试按 P 切换详情状态(SendMessage强发)...")
                     self.hw_press("p", use_send=True)
                     time.sleep(0.6)
-                    pos_target = self.wait_for_image_with_element_multi(
-                        "skillcar.png",
-                        "liketag.png",
-                        region=self.regions["全界面"],
-                        main_threshold=0.75,
-                        like_threshold=0.7,
-                        final_threshold=0.7,
-                        timeout=4,
-                        interval=0.25,
-                        fast_mode=False
-                    )
+                    pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
                     if pos_target:
                         self.detail_state_confirmed = True
 
                 if not pos_target:
-                    self.log("组合识别未命中：未同时确认 skillcar.png + liketag.png，本页跳过，禁止单图兜底。")
+                    self.log("严格匹配未命中：skillcar + liketag 固定位置验证未通过，本页跳过。")
                     self._save_race_car_debug(
                         "combo_miss_page",
-                        note="翻页/品牌选择后组合识别未命中，保存本页 skillcar/liketag 最佳匹配情况",
+                        note="翻页/品牌选择后严格匹配未命中，保存本页 skillcar/liketag 最佳匹配情况",
                         extra={"main": "skillcar.png", "sub": "liketag.png"}
                     )
                 if pos_target:
@@ -579,7 +556,12 @@ class RaceMixin:
 
             if self.race_counter == target_count - 1:
                 self.hw_press("enter")
-                time.sleep(2.0)
+                # 首次完成蓝图时，评价弹窗会在离开结算页后才出现。
+                time.sleep(0.4)
+                self.handle_author_prompt(release_drive_keys=False)
+                if not self.is_running:
+                    return False
+                time.sleep(0.5)
             else:
                 self.hw_press("x")
                 time.sleep(0.8)
@@ -590,4 +572,49 @@ class RaceMixin:
             self.update_running_ui("循环跑图", self.race_counter, target_count)
             self.log(f"循环跑图计数 +1: {self.race_counter}/{target_count}" )
 
+        return True
+
+    # ==========================================
+    # 以下为从上游同步的跑图流程补丁方法
+    # ==========================================
+
+    def abort_invalid_blueprint_and_back_to_roam(self):
+        """蓝图搜索后识别到 racenotfound，判定该蓝图已失效，退回漫游。"""
+        self.invalid_blueprint_abort = True
+        self.log("该蓝图已失效", level="WARN")
+        for _ in range(3):
+            if not self.is_running:
+                return False
+            self.hw_press("esc")
+            time.sleep(0.35)
+        return False
+
+    def handle_author_prompt(self, release_drive_keys=False):
+        """检测并处理赛事评价弹窗（点赞/点踩作者）。"""
+        profile = get_recognition_profile(self, "race.author_prompt")
+        self.log(f"正在检测赛事评价弹窗（最多 {profile['timeout']:.1f}s）...", level="DEBUG")
+        pos_author = self.wait_for_any_image_gray(
+            ["likeauthor.png", "dislikeauthor.png"],
+            region=self.regions["中间"],
+            threshold=profile["threshold"],
+            timeout=profile["timeout"],
+            interval=profile["interval"],
+            fast_mode=profile["fast_mode"],
+            invert_mode=profile["invert_mode"],
+        )
+        if not pos_author:
+            self.log("未出现赛事评价弹窗，继续后续流程。", level="DEBUG")
+            return False
+
+        if release_drive_keys:
+            self.hw_key_up("w")
+            self.hw_key_up("up")
+
+        self.log("已识别赛事评价弹窗，执行点赞确认。")
+        for _ in range(2):
+            if not self.is_running:
+                return True
+            self.hw_press("enter")
+            time.sleep(0.35)
+        time.sleep(0.8)
         return True

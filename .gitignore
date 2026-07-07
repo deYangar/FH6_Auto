@@ -37,6 +37,13 @@ _debug_*/
 *.backup_*
 _review_upstream/
 UPSTREAM_UPDATE_PLAN.md
+PixPin_*.png
+crop_*.png
+tag_C[0-9].png
+car_crops/
+patch_*.py
+cleanup.py
+PROGRESS.md
 
 # IDE / OS files
 .idea/

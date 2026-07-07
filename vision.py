@@ -10,6 +10,7 @@ import win32gui
 import fh6_backend
 from config import APP_DIR, INTERNAL_DIR, CACHE_DIR, TEMPLATE_CACHE_FILE, TEMPLATE_META_FILE, get_img_path
 from constants import MATCH_THRESHOLD
+from recognition_config import get_recognition_profile
 
 
 class VisionMixin:
@@ -270,7 +271,7 @@ class VisionMixin:
         scales = []
         def add_scale(s):
             s = round(float(s), 3)
-            if 0.45 <= s <= 1.8 and s not in scales:
+            if 0.35 <= s <= 1.8 and s not in scales:
                 scales.append(s)
         # 先加"最可能正确"的比例及其微调
         add_scale(primary_scale)
@@ -406,326 +407,41 @@ class VisionMixin:
             return None
 
     def find_image_with_element(self, main_path, sub_path, region=None, threshold=0.85, fast_mode=True):
-        if not self.is_running:
-            return None
-        try:
-            screen_bgr = self.capture_region(region)
-            scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
-            for scale in scales_to_try:
-                # 1. 结合新架构缓存直接读取缩放好的图像
-                main_tpl_c, _ = self.get_scaled_template(main_path, scale)
-                sub_tpl_c, _ = self.get_scaled_template(sub_path, scale)
-                if main_tpl_c is None or sub_tpl_c is None:
-                    continue
-                h_m, w_m = main_tpl_c.shape[:2]
-                if h_m < 5 or w_m < 5 or h_m > screen_bgr.shape[0] or w_m > screen_bgr.shape[1]:
-                    continue
-                # 2. 一阶匹配:寻找全屏符合的主目标
-                res_main = cv2.matchTemplate(screen_bgr, main_tpl_c, cv2.TM_CCOEFF_NORMED)
-                loc = np.where(res_main >= threshold)
-                checked = set() # 【关键优化】:坐标去重,解决几十万次无效循环造成的卡顿
-                for pt in zip(*loc[::-1]):
-                    x, y = pt
-                    # 过滤相邻 10 个像素内的重复识别点
-                    key = (x // 10, y // 10)
-                    if key in checked:
-                        continue
-                    checked.add(key)
-                    # 3. 旧代码的核心精髓:在主图区域四周略微扩大 5 像素的范围内找元素
-                    sub_roi = screen_bgr[
-                        max(0, y - 5):min(screen_bgr.shape[0], y + h_m + 5),
-                        max(0, x - 5):min(screen_bgr.shape[1], x + w_m + 5),
-                    ]
-                    if sub_tpl_c.shape[0] > sub_roi.shape[0] or sub_tpl_c.shape[1] > sub_roi.shape[1]:
-                        continue
-                                        # 4. 二阶匹配:验证提取范围内是否包含子元素
-                    res_sub = cv2.matchTemplate(sub_roi, sub_tpl_c, cv2.TM_CCOEFF_NORMED)
-                    sub_score = cv2.minMaxLoc(res_sub)[1]
-                    if sub_score >= threshold:
-                        # 【新增】:在组合图像查找中增加详细日志返回
-                        main_score = res_main[y, x]
-                        self.log(f"[ComboMatch] 命中: {main_path}+{sub_path} | 主图得分: {main_score:.3f} | 元素得分: {sub_score:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
-                        return (
-                            x + w_m // 2 + (region[0] if region else 0),
-                            y + h_m // 2 + (region[1] if region else 0),
-                        )
-            return None
-        except Exception as e:
-            self.log(f"find_image_with_element 异常: {e}")
-            return None
+        """组合匹配（基础彩色模式）- 委托给 find_combo"""
+        return self.find_combo(
+            main_path, sub_path, region=region,
+            main_threshold=threshold, sub_threshold=threshold, final_threshold=threshold,
+            use_gray_only=False, use_four_dim=False, sub_independent_scale=False,
+            fast_mode=fast_mode
+        )
     def find_image_with_element_stable(
-        self,
-        main_path,
-        sub_path,
-        region=None,
-        main_threshold=0.60,
-        verify_threshold=0.72,
-        sub_threshold=0.70,
-        max_candidates=15
+        self, main_path, sub_path, region=None,
+        main_threshold=0.60, verify_threshold=0.72, sub_threshold=0.70, max_candidates=15
     ):
-        if not self.is_running:
-            return None
-
-        try:
-            screen = pyautogui.screenshot(region=region)
-            screen_gray = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2GRAY)
-
-            main_tpl = self.load_template_gray(main_path)
-            sub_tpl = self.load_template_gray(sub_path)
-
-            if main_tpl is None or sub_tpl is None:
-                return None
-
-            h_m, w_m = main_tpl.shape[:2]
-            h_s, w_s = sub_tpl.shape[:2]
-
-            if h_m > screen_gray.shape[0] or w_m > screen_gray.shape[1]:
-                return None
-
-            res_main = cv2.matchTemplate(screen_gray, main_tpl, cv2.TM_CCOEFF_NORMED)
-            ys, xs = np.where(res_main >= main_threshold)
-
-            if len(xs) == 0:
-                return None
-
-            candidates = [(float(res_main[y, x]), x, y) for x, y in zip(xs, ys)]
-            candidates.sort(key=lambda t: t[0], reverse=True)
-
-            checked = set()
-            checked_count = 0
-
-            for main_score, x, y in candidates:
-                key = (x // 8, y // 8)
-                if key in checked:
-                    continue
-                checked.add(key)
-
-                checked_count += 1
-                if checked_count > max_candidates:
-                    break
-
-                pad = 8
-                x1 = max(0, x - pad)
-                y1 = max(0, y - pad)
-                x2 = min(screen_gray.shape[1], x + w_m + pad)
-                y2 = min(screen_gray.shape[0], y + h_m + pad)
-
-                sub_roi = screen_gray[y1:y2, x1:x2]
-                if sub_roi.shape[0] < h_s or sub_roi.shape[1] < w_s:
-                    continue
-
-                res_sub = cv2.matchTemplate(sub_roi, sub_tpl, cv2.TM_CCOEFF_NORMED)
-                sub_score = cv2.minMaxLoc(res_sub)[1]
-
-                if main_score >= verify_threshold and sub_score >= sub_threshold:
-                    cx = x + w_m // 2
-                    cy = y + h_m // 2
-                    if region:
-                        cx += region[0]
-                        cy += region[1]
-                    # 【新增】:打印稳定版组合匹配的详细得分
-                    self.log(f"[StableMatch] 命中: {main_path}+{sub_path} | 主图: {main_score:.3f} (需>{verify_threshold}) | 元素: {sub_score:.3f} (需>{sub_threshold})")
-                    return (cx, cy)
-
-            return None
-
-        except Exception as e:
-            self.log(f"find_image_with_element_stable 识别报错: {e}")
-            return None
+        """组合匹配（灰度稳定模式）- 委托给 find_combo，含多尺度+IoU NMS"""
+        return self.find_combo(
+            main_path, sub_path, region=region,
+            main_threshold=main_threshold, sub_threshold=sub_threshold, final_threshold=verify_threshold,
+            use_gray_only=True, use_four_dim=False, sub_independent_scale=False,
+            fast_mode=True, max_candidates=max_candidates
+        )
     def find_image_with_element_multi(self, main_path, sub_path, region=None, fast_mode=True,
         main_threshold=0.60, like_threshold=0.75, final_threshold=0.72, mask_areas=None):
-        if not self.is_running:
-            return None
-
-        try:
-            screen_bgr = self.capture_region(region, mask_areas=mask_areas)
-            screen_gray = self.to_gray_image(screen_bgr)
-            screen_edge = self.to_edge_image(screen_bgr)
-
-            scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
-
-            sub_scales_to_try = self.get_scales_to_try(fast_mode=False)
-
-            for scale in scales_to_try:
-                main_tpl_c, _ = self.get_scaled_template(main_path, scale)
-
-                if main_tpl_c is None:
-                    continue
-
-                main_tpl_gray = self.to_gray_image(main_tpl_c)
-                main_tpl_edge = self.to_edge_image(main_tpl_c)
-
-                h_m, w_m = main_tpl_c.shape[:2]
-                if h_m < 5 or w_m < 5:
-                    continue
-                if h_m > screen_bgr.shape[0] or w_m > screen_bgr.shape[1]:
-                    continue
-
-                # 用彩色主模板先找候选,门槛放低
-                res_main = cv2.matchTemplate(screen_bgr, main_tpl_c, cv2.TM_CCOEFF_NORMED)
-                # 不再只靠 >= main_threshold 硬切,改成取前 N 个高分候选
-                flat = res_main.ravel()
-                if flat.size == 0:
-                    continue
-                top_k = min(80, flat.size)   # 可调,先 80
-                idxs = np.argpartition(flat, -top_k)[-top_k:]
-                points = []
-                for idx in idxs:
-                    y, x = np.unravel_index(idx, res_main.shape)
-                    score = res_main[y, x]
-                    # 给一个很低的底线,防止垃圾点太多
-                    if score < max(0.55, main_threshold - 0.12):
-                        continue
-                    points.append((x, y, score))
-                # 先按 y、x 排序,保证视觉顺序
-                points.sort(key=lambda p: (p[1], p[0]))
-
-                checked_points = set()
-
-                for pt in points:
-                    x, y, base_score = pt
-
-                    # 去重,避免同一辆车计算多次
-                    key = (x // 10, y // 10)
-                    if key in checked_points:
-                        continue
-                    checked_points.add(key)
-
-                    roi_bgr = screen_bgr[y:y + h_m, x:x + w_m]
-                    roi_gray = screen_gray[y:y + h_m, x:x + w_m]
-                    roi_edge = screen_edge[y:y + h_m, x:x + w_m]
-
-                    if roi_bgr.shape[:2] != main_tpl_c.shape[:2]:
-                        continue
-
-                    # 四维打分系统 (抗 HDR 核心)
-                    color_score = self.match_template_score(roi_bgr, main_tpl_c)
-                    gray_score = self.match_template_score(roi_gray, main_tpl_gray)
-                    edge_score = self.match_template_score(roi_edge, main_tpl_edge)
-
-                    roi_center = self.crop_center_ratio(roi_bgr, ratio=0.6)
-                    tpl_center = self.crop_center_ratio(main_tpl_c, ratio=0.6)
-                    center_score = self.match_template_score(roi_center, tpl_center)
-
-                    # 标签匹配 (NEW 标签或作者点赞标签)
-                    # 主图卡片和子元素在 FH UI 中可能不是同一缩放比例：例如 skillcar=1.137，而 liketag=0.711。
-                    # 因此子元素必须在主图附近独立尝试所有缩放，而不能强制复用 main scale。
-                    pad = 5
-                    sub_roi = screen_bgr[
-                        max(0, y - pad):min(screen_bgr.shape[0], y + h_m + pad),
-                        max(0, x - pad):min(screen_bgr.shape[1], x + w_m + pad),
-                    ]
-                    like_score = 0.0
-                    like_scale = None
-                    for sub_scale in sub_scales_to_try:
-                        sub_tpl_c, _ = self.get_scaled_template(sub_path, sub_scale)
-                        if sub_tpl_c is None:
-                            continue
-                        if sub_tpl_c.shape[0] > sub_roi.shape[0] or sub_tpl_c.shape[1] > sub_roi.shape[1]:
-                            continue
-                        curr_like = self.match_template_score(sub_roi, sub_tpl_c)
-                        if curr_like > like_score:
-                            like_score = curr_like
-                            like_scale = sub_scale
-
-                    if like_score < like_threshold:
-                        continue
-
-                    # 综合计算总分
-                    final_score = (
-                        color_score * 0.30 +
-                        gray_score * 0.20 +
-                        edge_score * 0.20 +
-                        center_score * 0.15 +
-                        like_score * 0.15
-                    )
-
-                    curr_pos = (
-                        x + w_m // 2 + (region[0] if region else 0),
-                        y + h_m // 2 + (region[1] if region else 0),
-                    )
-
-                    # 只要及格,立刻返回(因为已经排过序了,第一个及格的一定是左上角的第一个目标)
-                    if final_score >= final_threshold:
-                        self.log(
-                            f"[MultiMatch] 锁定目标: {main_path}+{sub_path} | "
-                            f"综合: {final_score:.3f} | 彩色: {color_score:.3f} | "
-                            f"灰度: {gray_score:.3f} | 边缘: {edge_score:.3f} | "
-                            f"中心: {center_score:.3f} | 标签: {like_score:.3f} | "
-                            f"主缩放:{scale:.3f} 标签缩放:{(like_scale or 0):.3f}"
-                        )
-                        return curr_pos
-
-            return None
-
-        except Exception as e:
-            self.log(f"find_image_with_element_multi 异常: {e}")
-            return None
-
+        """组合匹配（四维多维度模式）- 委托给 find_combo，含灰度预筛+IoU NMS"""
+        return self.find_combo(
+            main_path, sub_path, region=region,
+            main_threshold=main_threshold, sub_threshold=like_threshold, final_threshold=final_threshold,
+            use_gray_only=False, use_four_dim=True, sub_independent_scale=True,
+            fast_mode=fast_mode, mask_areas=mask_areas
+        )
     def find_image_with_element_fast(self, main_path, sub_path, region=None, threshold=0.70, sub_threshold=0.70):
-        if not self.is_running:
-            return None
-
-        try:
-            screen = pyautogui.screenshot(region=region)
-            screen_gray = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2GRAY)
-
-            main_tpl = self.load_template_gray(main_path)
-            sub_tpl = self.load_template_gray(sub_path)
-
-            if main_tpl is None or sub_tpl is None:
-                return None
-
-            h_m, w_m = main_tpl.shape[:2]
-            h_s, w_s = sub_tpl.shape[:2]
-
-            if h_m > screen_gray.shape[0] or w_m > screen_gray.shape[1]:
-                return None
-
-            res_main = cv2.matchTemplate(screen_gray, main_tpl, cv2.TM_CCOEFF_NORMED)
-            loc = np.where(res_main >= threshold)
-
-            checked = set()
-
-            for pt in zip(*loc[::-1]):
-                x, y = pt
-
-                # 去重,避免相邻重复点太多
-                key = (x // 10, y // 10)
-                if key in checked:
-                    continue
-                checked.add(key)
-
-                x1 = max(0, x - 5)
-                y1 = max(0, y - 5)
-                x2 = min(screen_gray.shape[1], x + w_m + 5)
-                y2 = min(screen_gray.shape[0], y + h_m + 5)
-
-                sub_roi = screen_gray[y1:y2, x1:x2]
-
-                if sub_roi.shape[0] < h_s or sub_roi.shape[1] < w_s:
-                    continue
-
-                res_sub = cv2.matchTemplate(sub_roi, sub_tpl, cv2.TM_CCOEFF_NORMED)
-                _, max_val_sub, _, _ = cv2.minMaxLoc(res_sub)
-
-                if max_val_sub >= sub_threshold:
-                    cx = x + w_m // 2
-                    cy = y + h_m // 2
-                    if region:
-                        cx += region[0]
-                        cy += region[1]
-                    # 【新增】:打印快速匹配模式得分
-                    main_score = res_main[y, x]
-                    self.log(f"[FastMatch] 命中: {main_path}+{sub_path} | 主图: {main_score:.3f} (需>{threshold}) | 元素: {max_val_sub:.3f} (需>{sub_threshold})")
-                    return (cx, cy)
-
-            return None
-
-        except Exception as e:
-            self.log(f"find_image_with_element_fast 异常: {e}")
-            return None
-
+        """组合匹配（灰度快速模式）- 委托给 find_combo，含多尺度+IoU NMS"""
+        return self.find_combo(
+            main_path, sub_path, region=region,
+            main_threshold=threshold, sub_threshold=sub_threshold, final_threshold=threshold,
+            use_gray_only=True, use_four_dim=False, sub_independent_scale=False,
+            fast_mode=True
+        )
     def wait_for_image_with_element_multi(self, main_path, sub_path, region=None, fast_mode=True,
         main_threshold=0.60, like_threshold=0.75,
         final_threshold=0.72, timeout=30, interval=0.4):
@@ -841,19 +557,11 @@ class VisionMixin:
                 # 1. 基础彩色初筛
                 res_main = cv2.matchTemplate(screen_bgr, main_tpl_bgr, cv2.TM_CCOEFF_NORMED)
                 loc = np.where(res_main >= main_threshold)
+                raw_pts = [(int(x), int(y), w_m, h_m, float(res_main[y, x])) for x, y in zip(*loc[::-1])]
+                # IoU NMS 去重（按分数降序，替代原始网格去重）
+                points = self._nms_iou(raw_pts, iou_threshold=0.3)
 
-
-                points = list(zip(*loc[::-1]))
-                # 强制按 X 坐标(从左到右)优先排序,无视上下排
-                points.sort(key=lambda p: (p[1] // 50, p[0]))
-
-                checked = set()
-                for pt in points:
-                    x, y = pt
-                    if (x // 10, y // 10) in checked: continue
-                    checked.add((x // 10, y // 10))
-
-                    base_score = res_main[y, x]
+                for x, y, _, _, base_score in points:
 
                     roi_bgr = screen_bgr[y:y+h_m, x:x+w_m]
                     roi_gray = screen_gray[y:y+h_m, x:x+w_m]
@@ -936,11 +644,12 @@ class VisionMixin:
             return None
         try:
             screen_bgr = self.capture_region(region)
+            # 先按屏幕分辨率算出最可能的缩放比，再补充固定值
             scales = []
-            for s in [1.0, 0.98, 1.02, 0.95, 1.05]:
+            for s in self.get_scales_to_try(fast_mode=False):
                 if s not in scales:
                     scales.append(s)
-            for s in self.get_scales_to_try(fast_mode=False):
+            for s in [1.0, 0.98, 1.02, 0.95, 1.05]:
                 if s not in scales:
                     scales.append(s)
 
@@ -951,7 +660,6 @@ class VisionMixin:
             MAIN_FALLBACK_MIN = 0.70    # 彩色低于此值直接跳过，不兜底
             TAG_THRESHOLD = 0.85        # NEW 角标内部验阈值
             CLS_THRESHOLD = 0.85        # B600 等级标签内部验阈值
-            NMS_DIST = 80               # 候选去重间距（像素）
             TAG_PAD = 4                 # NEW/B600 内部搜索抗抖动（像素）
             CLS_PAD = 4
 
@@ -994,11 +702,9 @@ class VisionMixin:
                 raw_points = [(int(x), int(y), float(main_res[y, x])) for x, y in zip(*locs[::-1])]
                 raw_points.sort(key=lambda b: -b[2])
 
-                # NMS 去重
-                candidates = []
-                for px, py, ps in raw_points:
-                    if all(abs(px - cx) > NMS_DIST or abs(py - cy) > NMS_DIST for cx, cy, _ in candidates):
-                        candidates.append((px, py, ps))
+                # IoU NMS 去重（替代固定距离去重）
+                nms_input = [(px, py, w_m, h_m, ps) for px, py, ps in raw_points]
+                candidates = [(c[0], c[1], c[4]) for c in self._nms_iou(nms_input, iou_threshold=0.3)]
 
                 if not candidates:
                     if debug_saved < 3:
@@ -1158,7 +864,7 @@ class VisionMixin:
                 )
                 return (x, y)
 
-            self.log("[StrictCar] 本帧未找到达标目标车。")
+            self.log("[StrictCar] 本帧未找到达标目标车，尝试 HSV 颜色预筛兜底...")
             # 保存最终失败快照
             if debug_saved < 5:
                 self._save_strict_car_simple(
@@ -1166,6 +872,28 @@ class VisionMixin:
                     screen_bgr=screen_bgr,
                     meta={"reason": "所有缩放均未找到达标目标"},
                 )
+
+            # === HSV 颜色预筛兜底：从黄色 NEW 标签反推车卡位置 ===
+            for fb_scale in scales:
+                tag_tpl_fb, _ = self.get_scaled_template("newcartag.png", fb_scale)
+                if tag_tpl_fb is None:
+                    continue
+                color_candidates = self.find_new_tag_by_color(screen_bgr, tag_tpl_fb, fb_scale)
+                if not color_candidates:
+                    continue
+                for tag_score_fb, card_x, card_y, card_w, card_h, center_x, center_y, tag_x, tag_y, tag_w, tag_h in color_candidates:
+                    validated = self.validate_new_tag_grid_fallback(screen_bgr, tag_x, tag_y, tag_w, tag_h)
+                    if validated is None:
+                        continue
+                    click_x_fb, click_y_fb, white_ratio, orange_ratio = validated
+                    off_x = region[0] if region else 0
+                    off_y = region[1] if region else 0
+                    self.log(
+                        f"[StrictCar] HSV 兜底命中: tag={tag_score_fb:.3f} "
+                        f"white={white_ratio:.3f} orange={orange_ratio:.3f} scale={fb_scale:.3f}"
+                    )
+                    return (click_x_fb + off_x, click_y_fb + off_y)
+
             return None
         except Exception as e:
             self.log(f"find_new_consumable_car_strict 异常: {e}")
@@ -1214,6 +942,7 @@ class VisionMixin:
             screen_bgr = self.capture_region(region)
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
+            effective_threshold = self.get_calibrated_gray_threshold(threshold)
 
             # 【新增】模板只读取一次,避免每个 scale 都重复加载
             tpl_gray_raw = self.load_template_gray(template_path)
@@ -1235,8 +964,8 @@ class VisionMixin:
                 # ==============================
                 res = cv2.matchTemplate(screen_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                if max_val >= threshold:
-                    self.log(f"[GrayMatch] 命中: {template_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                if max_val >= effective_threshold:
+                    self.log(f"[GrayMatch] 命中: {template_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
                     return (
                         max_loc[0] + w // 2 + (region[0] if region else 0),
                         max_loc[1] + h // 2 + (region[1] if region else 0),
@@ -1249,8 +978,8 @@ class VisionMixin:
                     tpl_inv = 255 - tpl_gray
                     res_inv = cv2.matchTemplate(screen_gray, tpl_inv, cv2.TM_CCOEFF_NORMED)
                     _, max_val_inv, _, max_loc_inv = cv2.minMaxLoc(res_inv)
-                    if max_val_inv >= threshold:
-                        self.log(f"[GrayMatch] 命中: {template_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                    if max_val_inv >= effective_threshold:
+                        self.log(f"[GrayMatch] 命中: {template_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
                         return (
                             max_loc_inv[0] + w // 2 + (region[0] if region else 0),
                             max_loc_inv[1] + h // 2 + (region[1] if region else 0),
@@ -1280,6 +1009,7 @@ class VisionMixin:
             screen_bgr = self.capture_region(region)
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
+            effective_threshold = self.get_calibrated_gray_threshold(threshold)
 
             for img_path in image_list:
                 # 【新增】模板只读取一次
@@ -1302,8 +1032,8 @@ class VisionMixin:
                     # ==============================
                     res = cv2.matchTemplate(screen_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
                     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                    if max_val >= threshold:
-                        self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                    if max_val >= effective_threshold:
+                        self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
                         return (
                             max_loc[0] + w // 2 + (region[0] if region else 0),
                             max_loc[1] + h // 2 + (region[1] if region else 0),
@@ -1316,8 +1046,8 @@ class VisionMixin:
                         tpl_inv = 255 - tpl_gray
                         res_inv = cv2.matchTemplate(screen_gray, tpl_inv, cv2.TM_CCOEFF_NORMED)
                         _, max_val_inv, _, max_loc_inv = cv2.minMaxLoc(res_inv)
-                        if max_val_inv >= threshold:
-                            self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                        if max_val_inv >= effective_threshold:
+                            self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
                             return (
                                 max_loc_inv[0] + w // 2 + (region[0] if region else 0),
                                 max_loc_inv[1] + h // 2 + (region[1] if region else 0),
@@ -1508,3 +1238,658 @@ class VisionMixin:
             return cv2.minMaxLoc(res)[1]
         except Exception:
             return 0.0
+
+    def _nms_iou(self, candidates, iou_threshold=0.3):
+        """IoU-based NMS for candidate deduplication.
+        candidates: list of tuples, first 5 elements must be (x, y, w, h, score, ...)
+        Returns deduplicated list sorted by score descending.
+        """
+        if not candidates:
+            return []
+        candidates.sort(key=lambda c: c[4], reverse=True)
+        keep = []
+        suppressed = set()
+        for i, c1 in enumerate(candidates):
+            if i in suppressed:
+                continue
+            keep.append(c1)
+            x1, y1, w1, h1 = c1[0], c1[1], c1[2], c1[3]
+            for j in range(i + 1, len(candidates)):
+                if j in suppressed:
+                    continue
+                c2 = candidates[j]
+                x2, y2, w2, h2 = c2[0], c2[1], c2[2], c2[3]
+                ix1 = max(x1, x2)
+                iy1 = max(y1, y2)
+                ix2 = min(x1 + w1, x2 + w2)
+                iy2 = min(y1 + h1, y2 + h2)
+                if ix2 <= ix1 or iy2 <= iy1:
+                    continue
+                inter = (ix2 - ix1) * (iy2 - iy1)
+                area1 = w1 * h1
+                area2 = w2 * h2
+                denom = area1 + area2 - inter
+                iou = inter / denom if denom > 0 else 0
+                if iou > iou_threshold:
+                    suppressed.add(j)
+        return keep
+
+    def find_combo(self, main_path, sub_path, region=None,
+                   main_threshold=0.60, sub_threshold=0.70, final_threshold=0.72,
+                   use_gray_only=False, use_four_dim=True, sub_independent_scale=True,
+                   fast_mode=True, max_candidates=15, mask_areas=None):
+        """统一组合匹配方法：主图匹配 → IoU NMS → 子元素验证。
+
+        模式：
+        - use_gray_only=True,  use_four_dim=False: 灰度快速/稳定模式
+        - use_gray_only=False, use_four_dim=False: 基础彩色模式
+        - use_gray_only=False, use_four_dim=True:  四维多维度模式（含灰度预筛）
+
+        返回: (x, y) 或 None
+        """
+        if not self.is_running:
+            return None
+        try:
+            screen_bgr = self.capture_region(region, mask_areas=mask_areas)
+            if screen_bgr is None:
+                return None
+
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            screen_edge = self.to_edge_image(screen_bgr) if use_four_dim else None
+
+            if use_gray_only:
+                screen_main = screen_gray
+            else:
+                screen_main = screen_bgr
+
+            scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
+            if sub_independent_scale:
+                # 独立缩放但不能无限缩小——限制在合理范围内
+                # 避免小模板(如28x31的liketag)缩到极小尺寸后产生假阳性
+                full_scales = self.get_scales_to_try(fast_mode=False)
+                sub_scales = [s for s in full_scales if s >= 0.35]
+            else:
+                sub_scales = scales_to_try
+
+            all_candidates = []
+
+            for scale in scales_to_try:
+                main_tpl_c, _ = self.get_scaled_template(main_path, scale)
+                if main_tpl_c is None:
+                    continue
+
+                h_m, w_m = main_tpl_c.shape[:2]
+                if h_m < 5 or w_m < 5 or h_m > screen_main.shape[0] or w_m > screen_main.shape[1]:
+                    continue
+
+                if use_gray_only:
+                    main_tpl = cv2.cvtColor(main_tpl_c, cv2.COLOR_BGR2GRAY)
+                else:
+                    main_tpl = main_tpl_c
+
+                res_main = cv2.matchTemplate(screen_main, main_tpl, cv2.TM_CCOEFF_NORMED)
+
+                if use_four_dim:
+                    # 四维模式：argpartition top 50 + 低分预筛
+                    flat = res_main.ravel()
+                    if flat.size == 0:
+                        continue
+                    top_k = min(50, flat.size)
+                    idxs = np.argpartition(flat, -top_k)[-top_k:]
+                    for idx in idxs:
+                        y, x = np.unravel_index(idx, res_main.shape)
+                        score = float(res_main[y, x])
+                        if score < max(0.55, main_threshold - 0.12):
+                            continue
+                        all_candidates.append((int(x), int(y), w_m, h_m, score, scale))
+                else:
+                    # 非四维模式：阈值过滤
+                    locs = np.where(res_main >= main_threshold)
+                    for x, y in zip(*locs[::-1]):
+                        score = float(res_main[y, x])
+                        all_candidates.append((int(x), int(y), w_m, h_m, score, scale))
+
+            if not all_candidates:
+                return None
+
+            # IoU NMS 去重（跨所有缩放比）
+            all_candidates = self._nms_iou(all_candidates, iou_threshold=0.3)
+
+            # 收集所有通过阈值的候选，返回 final_score 最高的
+            best_result = None
+            best_final_score = -1.0
+
+            for x, y, w_m, h_m, base_score, scale in all_candidates[:max_candidates]:
+                main_tpl_c, _ = self.get_scaled_template(main_path, scale)
+                if main_tpl_c is None:
+                    continue
+
+                if use_four_dim:
+                    # === 四维打分 ===
+                    main_tpl_gray = self.to_gray_image(main_tpl_c)
+                    main_tpl_edge = self.to_edge_image(main_tpl_c)
+
+                    roi_bgr = screen_bgr[y:y + h_m, x:x + w_m]
+                    roi_gray = screen_gray[y:y + h_m, x:x + w_m]
+                    roi_edge = screen_edge[y:y + h_m, x:x + w_m]
+
+                    if roi_bgr.shape[:2] != main_tpl_c.shape[:2]:
+                        continue
+
+                    color_score = self.match_template_score(roi_bgr, main_tpl_c)
+                    gray_score = self.match_template_score(roi_gray, main_tpl_gray)
+                    edge_score = self.match_template_score(roi_edge, main_tpl_edge)
+
+                    roi_center = self.crop_center_ratio(roi_bgr, ratio=0.6)
+                    tpl_center = self.crop_center_ratio(main_tpl_c, ratio=0.6)
+                    center_score = self.match_template_score(roi_center, tpl_center)
+
+                    # 子元素独立缩放验证
+                    pad = 5
+                    sub_roi = screen_bgr[
+                        max(0, y - pad):min(screen_bgr.shape[0], y + h_m + pad),
+                        max(0, x - pad):min(screen_bgr.shape[1], x + w_m + pad),
+                    ]
+                    like_score = 0.0
+                    # 子元素缩放绑定主图缩放：±0.15 范围内搜索
+                    narrow_sub_scales = [s for s in sub_scales if abs(s - scale) <= 0.15]
+                    if not narrow_sub_scales:
+                        narrow_sub_scales = [scale]
+                    for sub_scale in narrow_sub_scales:
+                        sub_tpl_c, _ = self.get_scaled_template(sub_path, sub_scale)
+                        if sub_tpl_c is None:
+                            continue
+                        if sub_tpl_c.shape[0] > sub_roi.shape[0] or sub_tpl_c.shape[1] > sub_roi.shape[1]:
+                            continue
+                        curr = self.match_template_score(sub_roi, sub_tpl_c)
+                        if curr > like_score:
+                            like_score = curr
+
+                    if like_score < sub_threshold:
+                        continue
+
+                    final_score = (
+                        color_score * 0.35 +
+                        gray_score * 0.25 +
+                        edge_score * 0.05 +
+                        center_score * 0.20 +
+                        like_score * 0.15
+                    )
+
+                    if final_score >= final_threshold and final_score > best_final_score:
+                        cx = x + w_m // 2 + (region[0] if region else 0)
+                        cy = y + h_m // 2 + (region[1] if region else 0)
+                        best_final_score = final_score
+                        best_result = (cx, cy)
+                        self.log(
+                            f"[ComboMatch] 候选: {main_path}+{sub_path} | "
+                            f"综合: {final_score:.3f} | 彩色: {color_score:.3f} | "
+                            f"灰度: {gray_score:.3f} | 边缘: {edge_score:.3f} | "
+                            f"中心: {center_score:.3f} | 标签: {like_score:.3f} | "
+                            f"缩放: {scale:.3f}"
+                        )
+                else:
+                    # === 非四维：直接验证子元素 ===
+                    sub_tpl_c, _ = self.get_scaled_template(sub_path, scale)
+                    if sub_tpl_c is None:
+                        continue
+
+                    h_s, w_s = sub_tpl_c.shape[:2]
+                    pad = 5
+                    sub_roi = screen_main[
+                        max(0, y - pad):min(screen_main.shape[0], y + h_m + pad),
+                        max(0, x - pad):min(screen_main.shape[1], x + w_m + pad),
+                    ]
+                    if sub_roi.shape[0] < h_s or sub_roi.shape[1] < w_s:
+                        continue
+
+                    if use_gray_only:
+                        sub_tpl = cv2.cvtColor(sub_tpl_c, cv2.COLOR_BGR2GRAY)
+                    else:
+                        sub_tpl = sub_tpl_c
+
+                    res_sub = cv2.matchTemplate(sub_roi, sub_tpl, cv2.TM_CCOEFF_NORMED)
+                    sub_score = float(cv2.minMaxLoc(res_sub)[1])
+
+                    final_score = base_score * 0.70 + sub_score * 0.30
+                    if final_score >= final_threshold and final_score > best_final_score:
+                        cx = x + w_m // 2 + (region[0] if region else 0)
+                        cy = y + h_m // 2 + (region[1] if region else 0)
+                        best_final_score = final_score
+                        best_result = (cx, cy)
+                        self.log(
+                            f"[ComboMatch] 候选: {main_path}+{sub_path} | "
+                            f"主图: {base_score:.3f} | 元素: {sub_score:.3f} | "
+                            f"缩放: {scale:.3f}"
+                        )
+
+            if best_result:
+                self.log(f"[ComboMatch] 最终选中: final_score={best_final_score:.3f}")
+            return best_result
+        except Exception as e:
+            self.log(f"find_combo 异常: {e}")
+            return None
+
+    # ==========================================
+    # 以下为从上游同步的新增方法
+    # ==========================================
+
+    def get_calibrated_gray_threshold(self, threshold):
+        """根据校准结果动态调整灰度匹配阈值。"""
+        calib = getattr(self, "match_calibration", {}) or {}
+        offset = float(calib.get("gray_threshold_offset", 0.0) or 0.0)
+        adjusted = float(threshold) + offset
+        return max(0.50, min(0.98, adjusted))
+
+    def find_image_smart(self, template_path, primary_region=None, fallback_region=None, threshold=0.75, fast_mode=True):
+        """先搜主区域，失败后回退到备用区域。"""
+        if primary_region:
+            pos = self.find_image(template_path, region=primary_region, threshold=threshold, fast_mode=fast_mode)
+            if pos:
+                return pos
+        if fallback_region:
+            return self.find_image(template_path, region=fallback_region, threshold=threshold, fast_mode=fast_mode)
+        return None
+
+    def wait_for_image_with_element(self, main_path, sub_path, region=None, threshold=0.85, timeout=30, interval=0.4, fast_mode=True):
+        """等待组合匹配命中（find_image_with_element 的 wait 封装）。"""
+        start = time.time()
+        while self.is_running and time.time() - start < timeout:
+            pos = self.find_image_with_element(main_path, sub_path, region=region, threshold=threshold, fast_mode=fast_mode)
+            if pos:
+                return pos
+            sleep_end = time.time() + interval
+            while self.is_running and time.time() < sleep_end:
+                time.sleep(0.05)
+        return None
+
+    def wait_for_image_with_element_stable(self, main_path, sub_path, region=None, main_threshold=0.60, verify_threshold=0.72, sub_threshold=0.70, max_candidates=15, timeout=30, interval=0.4):
+        """等待 stable 组合匹配命中。"""
+        start = time.time()
+        while self.is_running and time.time() - start < timeout:
+            pos = self.find_image_with_element_stable(
+                main_path, sub_path, region=region,
+                main_threshold=main_threshold, verify_threshold=verify_threshold,
+                sub_threshold=sub_threshold, max_candidates=max_candidates,
+            )
+            if pos:
+                return pos
+            sleep_end = time.time() + interval
+            while self.is_running and time.time() < sleep_end:
+                time.sleep(0.05)
+        return None
+
+    def wait_for_image_with_element_fast(self, main_path, sub_path, region=None, threshold=0.70, sub_threshold=0.70, timeout=30, interval=0.4):
+        """等待 fast 组合匹配命中。"""
+        start = time.time()
+        while self.is_running and time.time() - start < timeout:
+            pos = self.find_image_with_element_fast(
+                main_path, sub_path, region=region,
+                threshold=threshold, sub_threshold=sub_threshold,
+            )
+            if pos:
+                return pos
+            sleep_end = time.time() + interval
+            while self.is_running and time.time() < sleep_end:
+                time.sleep(0.05)
+        return None
+
+    def wait_for_any_image_transparent(self, image_list, region=None, threshold=0.70, timeout=30, interval=0.4, fast_mode=True):
+        """等待任意透明模板出现。"""
+        start = time.time()
+        while self.is_running and time.time() - start < timeout:
+            pos = self.find_any_image_transparent(image_list, region, threshold, fast_mode)
+            if pos:
+                return pos
+            sleep_end = time.time() + interval
+            while self.is_running and time.time() < sleep_end:
+                time.sleep(0.05)
+        return None
+
+    def find_skill_car_from_like_tag(self, region=None):
+        """反向定位法：先全屏找 liketag，再反推车卡位置。"""
+        if not self.is_running:
+            return None
+        try:
+            screen_bgr = self.capture_region(region)
+            scales_to_try = self.get_scales_to_try(fast_mode=False)
+            best_debug = None
+
+            for scale in scales_to_try:
+                car_tpl, _ = self.get_scaled_template("skillcar.png", scale)
+                tag_tpl, _ = self.get_scaled_template("liketag.png", scale)
+                if car_tpl is None or tag_tpl is None:
+                    continue
+
+                h_c, w_c = car_tpl.shape[:2]
+                h_t, w_t = tag_tpl.shape[:2]
+                if h_c < 5 or w_c < 5 or h_t < 3 or w_t < 3:
+                    continue
+                if h_t > screen_bgr.shape[0] or w_t > screen_bgr.shape[1]:
+                    continue
+
+                tag_res = cv2.matchTemplate(screen_bgr, tag_tpl, cv2.TM_CCOEFF_NORMED)
+                ys, xs = np.where(tag_res >= 0.70)
+                tag_points = [(int(y), int(x), float(tag_res[y, x])) for y, x in zip(ys, xs)]
+                tag_points.sort(key=lambda p: (p[0], p[1], -p[2]))
+                checked_tags = set()
+
+                for ty, tx, tag_score in tag_points[:80]:
+                    key = (tx // 8, ty // 8)
+                    if key in checked_tags:
+                        continue
+                    checked_tags.add(key)
+
+                    sx1 = max(0, int(tx - w_c * 1.10))
+                    sy1 = max(0, int(ty - h_c * 1.10))
+                    sx2 = min(screen_bgr.shape[1], int(tx + w_t + w_c * 0.45))
+                    sy2 = min(screen_bgr.shape[0], int(ty + h_t + h_c * 0.45))
+                    search = screen_bgr[sy1:sy2, sx1:sx2]
+                    if search.shape[0] < h_c or search.shape[1] < w_c:
+                        continue
+
+                    car_res = cv2.matchTemplate(search, car_tpl, cv2.TM_CCOEFF_NORMED)
+                    _, car_score, _, car_loc = cv2.minMaxLoc(car_res)
+                    card_x = sx1 + car_loc[0]
+                    card_y = sy1 + car_loc[1]
+
+                    rel_x = tx - card_x
+                    rel_y = ty - card_y
+                    if not (-int(w_c * 0.08) <= rel_x <= int(w_c * 1.08) and -int(h_c * 0.08) <= rel_y <= int(h_c * 1.08)):
+                        best_debug = f"rel invalid tag:{tag_score:.3f} car:{car_score:.3f} rel:{rel_x},{rel_y} scale:{scale:.3f}"
+                        continue
+                    if car_score < 0.70:
+                        best_debug = f"car low tag:{tag_score:.3f} car:{car_score:.3f} scale:{scale:.3f}"
+                        continue
+
+                    click_x = card_x + w_c // 2 + (region[0] if region else 0)
+                    click_y = card_y + h_c // 2 + (region[1] if region else 0)
+                    self.log(
+                        f"[SkillCar] reverse hit: tag={tag_score:.3f} car={car_score:.3f} "
+                        f"rel=({rel_x},{rel_y}) scale={scale:.3f}"
+                    )
+                    return (click_x, click_y)
+
+            if best_debug:
+                self.log(f"[SkillCar] reverse miss: {best_debug}")
+            return None
+        except Exception as e:
+            self.log(f"find_skill_car_from_like_tag exception: {e}")
+            return None
+
+    def find_skill_car_with_like_tag(self, region=None, timeout=3.0, interval=0.25):
+        """组合入口：先 multi 匹配，失败降级反向定位。"""
+        profile = get_recognition_profile(
+            self,
+            "matcher.skillcar_like_combo",
+            timeout=timeout,
+            interval=interval,
+        )
+        start = time.time()
+        while self.is_running and time.time() - start < profile["timeout"]:
+            pos = self.find_image_with_element_multi(
+                "skillcar.png",
+                "liketag.png",
+                region=region,
+                fast_mode=profile["fast_mode"],
+                main_threshold=profile["main_threshold"],
+                like_threshold=profile["like_threshold"],
+                final_threshold=profile["final_threshold"],
+            )
+            if pos:
+                return pos
+
+            pos = self.find_skill_car_from_like_tag(region=region)
+            if pos:
+                return pos
+
+            time.sleep(profile["interval"])
+        return None
+
+    def find_new_tag_by_color(self, screen_bgr, tag_tpl, scale):
+        """HSV 颜色预筛法：用黄色 HSV 范围先圈定"全新"标签候选，再模板精匹配。"""
+        try:
+            h_s, w_s = screen_bgr.shape[:2]
+            hsv = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2HSV)
+            mask = cv2.inRange(hsv, np.array([22, 80, 160]), np.array([42, 255, 255]))
+            kernel = np.ones((3, 3), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            candidates = []
+            tag_h, tag_w = tag_tpl.shape[:2]
+            card_w = max(180, int(267 * scale))
+            card_h = max(130, int(198 * scale))
+
+            for cnt in contours:
+                x, y, w, h = cv2.boundingRect(cnt)
+                area = w * h
+                if area < 80 or area > 6000:
+                    continue
+                if w < 12 or h < 8 or w > 90 or h > 70:
+                    continue
+                if w / max(h, 1) < 0.6:
+                    continue
+
+                pad = max(8, int(12 * scale))
+                x1 = max(0, x - pad)
+                y1 = max(0, y - pad)
+                x2 = min(w_s, x + w + pad)
+                y2 = min(h_s, y + h + pad)
+                tag_roi = screen_bgr[y1:y2, x1:x2]
+                tag_score = self.match_template_score(tag_roi, tag_tpl)
+                if tag_score < 0.52:
+                    continue
+
+                card_x = int((x + w / 2) - card_w * 0.78)
+                card_y = int((y + h / 2) - card_h * 0.78)
+                card_x = max(0, min(card_x, w_s - card_w))
+                card_y = max(0, min(card_y, h_s - card_h))
+                center_x = card_x + card_w // 2
+                center_y = card_y + card_h // 2
+
+                candidates.append((tag_score, card_x, card_y, card_w, card_h, center_x, center_y, x, y, w, h))
+
+            if not candidates:
+                return []
+
+            candidates.sort(key=lambda item: (-item[0], item[8], item[7]))
+            return candidates
+        except Exception as e:
+            self.log(f"find_new_tag_by_color 异常: {e}")
+            return []
+
+    def validate_new_tag_grid_fallback(self, screen_bgr, tx, ty, tw, th):
+        """标签位置合理性校验：检查标签左上方是否有白色车卡、左下方是否有橙色信息。"""
+        try:
+            h_s, w_s = screen_bgr.shape[:2]
+            if tx < int(w_s * 0.20) or ty < int(h_s * 0.18) or ty > int(h_s * 0.92):
+                return None
+
+            wx1 = max(0, tx - 145)
+            wy1 = max(0, ty - 105)
+            wx2 = max(0, tx - 12)
+            wy2 = max(0, ty - 8)
+            white_roi = screen_bgr[wy1:wy2, wx1:wx2]
+            if white_roi.size == 0:
+                return None
+            white_mask = (
+                (white_roi[:, :, 0] > 185) &
+                (white_roi[:, :, 1] > 185) &
+                (white_roi[:, :, 2] > 185)
+            )
+            white_ratio = float(np.count_nonzero(white_mask)) / max(1, white_mask.size)
+            if white_ratio < 0.18:
+                return None
+
+            ox1 = max(0, tx - 190)
+            oy1 = max(0, ty - 12)
+            ox2 = min(w_s, tx + 85)
+            oy2 = min(h_s, ty + th + 44)
+            orange_roi = screen_bgr[oy1:oy2, ox1:ox2]
+            if orange_roi.size == 0:
+                return None
+            hsv = cv2.cvtColor(orange_roi, cv2.COLOR_BGR2HSV)
+            orange_mask = cv2.inRange(hsv, np.array([8, 80, 140]), np.array([32, 255, 255]))
+            orange_ratio = float(np.count_nonzero(orange_mask)) / max(1, orange_mask.size)
+            if orange_ratio < 0.035:
+                return None
+
+            click_x = max(0, min(w_s - 1, tx - 60))
+            click_y = max(0, min(h_s - 1, ty - 42))
+            return click_x, click_y, white_ratio, orange_ratio
+        except Exception as e:
+            self.log(f"validate_new_tag_grid_fallback 异常: {e}")
+            return None
+
+    # =================================================================
+    # skillcar 严格匹配：固定位置 liketag 验证
+    # =================================================================
+
+    def find_skill_car_strict(self, region=None):
+        """严格匹配 skillcar 车卡：
+        Step 1: 全屏跑 skillcar.png 找候选（限定缩放 0.60~1.20）
+        Step 2: 每个候选内部右下象限区域验 liketag.png 或 drivingtag.png
+        返回: (x, y) 或 None
+        """
+        if not self.is_running:
+            return None
+        try:
+            screen_bgr = self.capture_region(region)
+            if screen_bgr is None:
+                return None
+
+            # 缩放范围：0.40 ~ 1.20，优先尝试接近预期值
+            # 注意：不同分辨率屏幕下所需缩放比差异大（1080p≈0.80, 720p≈0.55）
+            base_scales = [1.0, 0.85, 0.75, 0.65, 0.55, 0.95, 0.90, 0.80, 0.70, 0.60, 0.50, 0.45, 0.40, 1.05, 1.10, 1.15, 1.20]
+            scales = []
+            for s in base_scales:
+                if s not in scales:
+                    scales.append(s)
+
+            # 阈值常量
+            MAIN_THRESHOLD = 0.75       # skillcar 彩色主阈值
+            MAIN_FALLBACK_MIN = 0.50    # matchTemplate 预筛下限（非车卡验证阈值）
+            TAG_THRESHOLD = 0.75        # liketag 内部验阈值
+
+            # liketag 搜索区域：右下象限（容忍不同分辨率下的比例差异）
+            # 实测：1080p liketag@x=0.899, 720p liketag@x=0.806 -> 用范围覆盖
+            TAG_X_MIN_RATIO = 0.65       # 搜索起点 X（宽度的 65%）
+            TAG_X_MAX_RATIO = 0.98       # 搜索终点 X（宽度的 98%）
+            TAG_Y_MIN_RATIO = 0.60       # 搜索起点 Y（高度的 60%）
+            TAG_Y_MAX_RATIO = 0.88       # 搜索终点 Y（高度的 88%）
+
+            best_candidate = None
+            best_candidate_score = 0.0
+
+            for scale in scales:
+                main_tpl, _ = self.get_scaled_template("skillcar.png", scale)
+                tag_tpl, _ = self.get_scaled_template("liketag.png", scale)
+                drv_tpl, _ = self.get_scaled_template("drivingtag.png", scale)
+                if main_tpl is None or tag_tpl is None:
+                    continue
+
+                h_m, w_m = main_tpl.shape[:2]
+                h_t, w_t = tag_tpl.shape[:2]
+                h_d, w_d = drv_tpl.shape[:2] if drv_tpl is not None else (0, 0)
+                if h_m < 20 or w_m < 20 or h_m > screen_bgr.shape[0] or w_m > screen_bgr.shape[1]:
+                    continue
+                if h_t < 8 or w_t < 8:
+                    continue
+
+                # 按缩放计算 liketag 搜索区域（右下象限）
+                tag_x_start = int(w_m * TAG_X_MIN_RATIO)
+                tag_x_end = int(w_m * TAG_X_MAX_RATIO)
+                tag_y_start = int(h_m * TAG_Y_MIN_RATIO)
+                tag_y_end = int(h_m * TAG_Y_MAX_RATIO)
+
+                # === Step 1: 全屏跑 skillcar，找候选 ===
+                main_res = cv2.matchTemplate(screen_bgr, main_tpl, cv2.TM_CCOEFF_NORMED)
+                locs = np.where(main_res >= MAIN_FALLBACK_MIN)
+                raw_points = [(int(x), int(y), float(main_res[y, x])) for x, y in zip(*locs[::-1])]
+                raw_points.sort(key=lambda b: -b[2])
+
+                # IoU NMS 去重
+                nms_input = [(px, py, w_m, h_m, ps) for px, py, ps in raw_points]
+                candidates = [(c[0], c[1], c[4]) for c in self._nms_iou(nms_input, iou_threshold=0.3)]
+
+                if not candidates:
+                    continue
+
+                # === Step 2: 对每个候选做内部 liketag 验证 ===
+                for car_x, car_y, car_score in candidates:
+                    # --- 2a: 车卡可信度判断（严格模式：无灰度兜底）---
+                    if car_score < MAIN_THRESHOLD:
+                        continue
+
+                    # --- 2b: 在右下象限区域搜索 liketag 或 drivingtag ---
+                    tx1 = max(0, car_x + tag_x_start)
+                    ty1 = max(0, car_y + tag_y_start)
+                    tx2 = min(screen_bgr.shape[1], car_x + tag_x_end + w_t)
+                    ty2 = min(screen_bgr.shape[0], car_y + tag_y_end + h_t)
+                    tag_search = screen_bgr[ty1:ty2, tx1:tx2]
+                    if tag_search.shape[0] < h_t or tag_search.shape[1] < w_t:
+                        continue
+                    tag_res = cv2.matchTemplate(tag_search, tag_tpl, cv2.TM_CCOEFF_NORMED)
+                    _, tag_score, _, _ = cv2.minMaxLoc(tag_res)
+
+                    # 也搜索 drivingtag（驾驶中的车独有，比 liketag 更唯一）
+                    drv_score = 0.0
+                    if drv_tpl is not None and h_d >= 8 and w_d >= 8:
+                        drv_tx2 = min(screen_bgr.shape[1], car_x + tag_x_end + w_d)
+                        drv_ty2 = min(screen_bgr.shape[0], car_y + tag_y_end + h_d)
+                        drv_search = screen_bgr[ty1:drv_ty2, tx1:drv_tx2]
+                        if drv_search.shape[0] >= h_d and drv_search.shape[1] >= w_d:
+                            drv_res = cv2.matchTemplate(drv_search, drv_tpl, cv2.TM_CCOEFF_NORMED)
+                            _, drv_score, _, _ = cv2.minMaxLoc(drv_res)
+
+                    # liketag 或 drivingtag 任一通过即可
+                    tag_passed = tag_score >= TAG_THRESHOLD
+                    drv_passed = drv_score >= TAG_THRESHOLD
+                    if not tag_passed and not drv_passed:
+                        self.log(
+                            f"[SkillCarStrict] 候选({car_x},{car_y}) 标签不足: "
+                            f"like={tag_score:.3f} drv={drv_score:.3f}<{TAG_THRESHOLD} "
+                            f"car={car_score:.3f} scale={scale:.3f}"
+                        )
+                        continue
+
+                    # drivingtag 命中时额外加分（只有当前驾驶的车才有）
+                    effective_score = car_score
+                    tag_type = "like"
+                    if drv_passed:
+                        effective_score += 0.05
+                        tag_type = "drv"
+
+                    # === 通过验证，记录候选 ===
+                    self.log(
+                        f"[SkillCarStrict] 发现达标候选: car=({car_x},{car_y}) "
+                        f"car={car_score:.3f} {tag_type}={max(tag_score, drv_score):.3f} "
+                        f"scale={scale:.3f}"
+                    )
+
+                    if effective_score > best_candidate_score:
+                        best_candidate_score = effective_score
+                        off_x = region[0] if region else 0
+                        off_y = region[1] if region else 0
+                        click_x = car_x + w_m // 2 + off_x
+                        click_y = car_y + h_m // 2 + off_y
+                        best_candidate = (click_x, click_y)
+
+            if best_candidate:
+                self.log(f"[SkillCarStrict] 最终选中: score={best_candidate_score:.3f}")
+            return best_candidate
+
+        except Exception as e:
+            self.log(f"find_skill_car_strict 异常: {e}")
+            return None
+
+    def wait_for_skill_car_strict(self, timeout=4.0, interval=0.25):
+        """等待严格匹配 skillcar，带超时循环。"""
+        start = time.time()
+        while self.is_running and time.time() - start < timeout:
+            pos = self.find_skill_car_strict(region=self.regions.get("全界面"))
+            if pos:
+                return pos
+            time.sleep(interval)
+        return None

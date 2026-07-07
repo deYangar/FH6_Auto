@@ -8,6 +8,42 @@
 
 ---
 
+## 更新日志
+
+### v1.2.0.0 (2026-07-07)
+
+**上游同步** (来自 [AxeroYF/FH6](https://github.com/AxeroYF/FH6) v4.1.0):
+- 新增 `recognition_config.py` — 36 套识别预设配置,支持通过 `config.json` 覆盖参数
+- `vision.py` 新增 10 个识别方法:动态阈值校准、智能找图、多元素验证、HSV 色彩预筛等
+- `cj_logic.py` 新增刷图车切换逻辑:自动检测当前车并切换到收藏的技能车
+- `race_logic.py` 新增蓝图失效检测 + 赛事评价弹窗处理
+- `flow_common.py` 新增 5 个工具函数 + 5 张模板图片
+
+**车辆识别匹配系统重构**:
+- `find_combo` 改为返回最高分候选(而非第一个通过阈值的)
+- 子元素缩放范围绑定到主模板 ±0.15,防止小模板在极小缩放下误匹配
+- 评分权重调整:边缘 20%→5%,彩色 30%→35%,中心 15%→20%
+
+**新增 `find_skill_car_strict` 严格匹配方法**:
+- skillcar.png 全屏匹配 (car ≥ 0.75) + 右下象限 liketag/drivingtag 验证 (≥ 0.75)
+- **drivingtag 双验证**: 驾驶中的车独有驾驶图标(黄绿色方向盘),比 liketag 更唯一
+- liketag 验证从固定点改为右下象限区域搜索,容忍不同分辨率下的比例差异
+- 多分辨率支持: 缩放范围 0.40~1.20,覆盖 720p~1080p
+- `race_logic.py` 和 `cj_logic.py` 全部切换为 `wait_for_skill_car_strict`
+
+**诊断系统**:
+- JSONL 事件日志 + 截图保存到 `diagnostic_reports/`
+- 日志级别过滤 + 日志导出
+- 关闭时零开销
+
+**其他改进**:
+- `log()` 方法支持 `level` 参数和自动级别推断
+- `find_new_consumable_car_strict` 缩放优先级优化
+- `get_scales_to_try` 下限从 0.45 降到 0.35
+- 移除过时的"启动前先将键盘设置为英文键盘"提示
+
+---
+
 ## 后台化改动说明
 
 | 项目 | 原版 | 本版 |
@@ -67,6 +103,20 @@
 - **根因**:`get_scales_to_try(fast_mode=True)` 只取前 8 个缩放,1600×900 下 scale=1.0 排第 10 被排除,而用户模板正是按 1600 原生分辨率截的
 - **修复**:在 primary_scale 微调后优先插入 `1.0`,确保 1600×900 和 1778×1000 两种分辨率下 1.0 都在 fast_mode 前 8 个里
 
+### 2026-07-07 修复:skillcar 误选当前装备车
+- **现象**:循环跑图开始时,bot 选中了当前装备车 GMC Syclone 1991 而非 skillcar
+- **根因**:`race_logic.py` 里 4 处 skillcar 匹配直接调 `wait_for_image_with_element_multi`,硬编码 `final_threshold=0.7`,0.707 通过了阈值。匹配发生在左侧车辆详情大面板上
+- **修复**:创建 `find_skill_car_strict` 严格匹配方法 — skillcar.png 全屏匹配 (≥0.75) + 右下象限 liketag/drivingtag 验证 (≥0.75),无灰度兜底。`race_logic.py` 和 `cj_logic.py` 全部切换
+
+### 2026-07-07 修复:驾驶中的 skillcar 识别不到
+- **现象**:用户正在驾驶 skillcar 时,liketag 向左位移,原位出现驾驶图标,导致固定位置验证失败
+- **根因**:liketag 在驾驶状态下会左移 ~10%,原位变为驾驶图标(黄绿色方向盘标志)
+- **修复**:1) liketag 验证从固定点改为右下象限区域搜索; 2) 新增 `drivingtag.png` 模板,liketag OR drivingtag 双验证; 3) drivingtag 命中时 +0.05 加分(全屏唯一)
+
+### 2026-07-07 修复:低分辨率下 skillcar 漏匹配
+- **现象**:720p (1389×782) 屏幕下 skillcar 匹配 scale≈0.55,被 `min_scale=0.60` 砍掉
+- **修复**:`find_skill_car_strict` base_scales 下限从 0.60 降到 0.40,`get_scales_to_try` 下限从 0.45 降到 0.35,`find_combo` sub_scales 下限从 0.50 降到 0.35
+
 ---
 
 ## 功能模块
@@ -90,7 +140,9 @@
 
 ### 超级抽奖
 - 自动点技能路径
-- **两步法选车识别**:先全屏匹配车卡模板 (newCC) 确认是目标车型 → 再在车卡内部固定位置验证 NEW 角标 + B600 等级标签,三者几何对齐才放行
+- **严格选车识别**: `find_skill_car_strict` 三重验证 — skillcar.png 全屏匹配 (≥0.75) + 右下象限 liketag 或 drivingtag 验证 (≥0.75)
+- **drivingtag 双验证**: 驾驶中的车独有驾驶图标,比 liketag 更唯一;drivingtag 命中时额外加分
+- **多分辨率支持**: 缩放范围 0.40~1.20,覆盖 720p~1080p
 - Multi-scale + Gray/Edge 兜底
 - 上车后等待菜单稳定,再进入"升级与调校 / 车辆专精"
 

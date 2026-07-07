@@ -4,6 +4,7 @@ import time
 import cv2
 import numpy as np
 from config import APP_DIR
+from recognition_config import get_recognition_profile
 
 
 class CJMixin:
@@ -688,3 +689,156 @@ class CJMixin:
         self.hw_press("esc")
         time.sleep(1.2)
         return True
+
+    # ==========================================
+    # 以下为从上游同步的刷图车切换链方法
+    # ==========================================
+
+    def should_switch_skillcar_after_cj(self):
+        """判断超抽后下一步是否为跑图，需要切换刷图车。"""
+        try:
+            return bool(self.var_chk3.get()) and int(self.entry_next3.get()) == 1
+        except Exception:
+            return bool(self.config.get("chk_3", True)) and int(self.config.get("next_3", 1)) == 1
+
+    def enter_my_cars_from_vehicle_menu(self):
+        """从车辆菜单用方向键重置到"我的车辆"并进入。"""
+        pos_uat = None
+        for _ in range(12):
+            if not self.is_running:
+                return False
+            profile = get_recognition_profile(self, "matcher.uat_menu")
+            pos_uat = self.find_any_image_gray(
+                ["UandT-w.png", "UandT-b.png"],
+                region=self.regions["全界面"],
+                threshold=profile["threshold"],
+                fast_mode=profile["fast_mode"],
+            )
+            if pos_uat:
+                break
+            time.sleep(0.2)
+
+        if pos_uat:
+            self.log("[CJ] 已确认车辆菜单，使用方向键重置到我的车辆。")
+        else:
+            self.log("[CJ] 未识别到升级与调校，仍尝试用方向键重置到我的车辆。")
+
+        for _ in range(6):
+            if not self.is_running:
+                return False
+            self.hw_press("up", delay=0.05)
+            time.sleep(0.05)
+
+        self.hw_press("enter")
+        time.sleep(2.0)
+        return True
+
+    def return_to_vehicle_menu_after_mastery(self):
+        """从车辆专精页面返回车辆菜单。"""
+        self.hw_press("esc")
+        time.sleep(1.4)
+        self.hw_press("esc")
+        time.sleep(1.0)
+
+        for _ in range(8):
+            if not self.is_running:
+                return False
+            profile = get_recognition_profile(self, "matcher.uat_menu")
+            pos_uat = self.find_any_image_gray(
+                ["UandT-w.png", "UandT-b.png"],
+                region=self.regions["全界面"],
+                threshold=profile["threshold"],
+                fast_mode=profile["fast_mode"],
+            )
+            if pos_uat:
+                self.log("[CJ] 已返回车辆菜单。")
+                return True
+            time.sleep(0.2)
+
+        self.log("[CJ] 未确认车辆菜单，继续下一步尝试。")
+        return True
+
+    def switch_to_liked_skillcar_in_car_list(self):
+        """在车辆列表中切换到带 liketag 的刷图车辆。"""
+        self.log("[SkillCar] 超抽后下一步为跑图，准备切换到带 liketag 的刷图车辆。")
+
+        pos_target = None
+        for _ in range(30):
+            if not self.is_running:
+                return False
+            pos_target = self.wait_for_skill_car_strict(
+                timeout=1.2,
+                interval=0.2,
+            )
+            if pos_target:
+                break
+            for _ in range(4):
+                self.hw_press("right", delay=0.06)
+                time.sleep(0.08)
+            time.sleep(0.35)
+
+        if not pos_target:
+            self.log("[SkillCar] 未找到带 liketag 的刷图车辆，无法切换到跑图车辆。")
+            return False
+
+        self.game_click(pos_target)
+        time.sleep(1.0)
+
+        profile = get_recognition_profile(self, "matcher.skillcar_switch_rc")
+        pos_rc = self.wait_for_image_gray(
+            "rc.png",
+            region=self.regions["全界面"],
+            threshold=profile["threshold"],
+            timeout=profile["timeout"],
+            interval=profile["interval"],
+            fast_mode=profile["fast_mode"],
+        )
+        if pos_rc:
+            self.log("[SkillCar] 点击上车。")
+            self.game_click(pos_rc)
+        else:
+            self.log("[SkillCar] 未找到上车按钮，尝试回车上车。")
+            self.hw_press("enter")
+            time.sleep(0.8)
+            self.hw_press("enter")
+
+        time.sleep(1.5)
+        self.hw_press("tab")
+        time.sleep(5.0)
+        self.log("[SkillCar] 已切换到刷图车辆并返回漫游。")
+        return True
+
+    def prepare_skillcar_for_next_race_after_cj(self):
+        """超抽后为下一轮跑图准备刷图车辆。"""
+        self.log("[SkillCar] 准备复用超抽车辆列表流程切换刷图车辆。")
+        if not self.enter_my_cars_from_vehicle_menu():
+            return False
+        self.hw_press("backspace")
+        time.sleep(1.0)
+
+        brand_pos = None
+        for _ in range(30):
+            if not self.is_running:
+                return False
+            profile = get_recognition_profile(self, "matcher.skillcar_brand_entry")
+            brand_pos = self.wait_for_image_gray(
+                "skillcarbrand.png",
+                region=self.regions["全界面"],
+                threshold=profile["threshold"],
+                timeout=profile["timeout"],
+                interval=profile["interval"],
+                fast_mode=profile["fast_mode"],
+            )
+            if brand_pos:
+                break
+            self.hw_press("up")
+            time.sleep(0.25)
+
+        if not brand_pos:
+            self.log("[SkillCar] 未找到斯巴鲁品牌。")
+            return False
+
+        self.game_click(brand_pos)
+        time.sleep(1.0)
+
+        return self.switch_to_liked_skillcar_in_car_list()
