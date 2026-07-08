@@ -7,7 +7,11 @@ import numpy as np
 import pyautogui
 from PIL import ImageGrab
 import win32gui
+from concurrent.futures import ThreadPoolExecutor
 import fh6_backend
+
+# 禁用 OpenCV 内部多线程，由 ThreadPoolExecutor 接管并行
+cv2.setNumThreads(1)
 from config import APP_DIR, INTERNAL_DIR, CACHE_DIR, TEMPLATE_CACHE_FILE, TEMPLATE_META_FILE, get_img_path
 from constants import MATCH_THRESHOLD
 from recognition_config import get_recognition_profile
@@ -275,25 +279,26 @@ class VisionMixin:
                 scales.append(s)
         # 先加"最可能正确"的比例及其微调
         add_scale(primary_scale)
-        add_scale(primary_scale * 0.98)
-        add_scale(primary_scale * 1.02)
         add_scale(primary_scale * 0.95)
         add_scale(primary_scale * 1.05)
+        add_scale(1.0)
+        # 宽范围覆盖：0.05 步长，确保不同来源的模板都能匹配
+        for s in [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.05, 1.1, 1.15, 1.2, 1.3, 1.5]:
+            add_scale(s)
+        if fast_mode:
+            return scales  # ~22 个比例，覆盖 0.4~1.5，兼顾速度与覆盖
+        # 非快速模式：补充更精细的微调
+        add_scale(primary_scale * 0.98)
+        add_scale(primary_scale * 1.02)
         add_scale(primary_scale * 0.92)
         add_scale(primary_scale * 1.08)
-        # 1.0 必须在 fast_mode 前 8 个里（很多模板按原生分辨率截）
-        add_scale(1.0)
-        # 再兼容其它来源
         for bw in [1920, 1600]:
             s = curr_w / bw
             add_scale(s)
             add_scale(s * 0.98)
             add_scale(s * 1.02)
-        # 最后兜底常用比例
-        for s in [0.95, 1.05, 0.9, 1.1, 0.85, 1.15, 0.8, 0.75, 0.7]:
+        for s in [0.35, 0.38, 0.42, 0.48, 0.52, 0.58, 0.62, 0.68, 0.72, 0.78, 0.82, 0.88, 0.92, 1.25, 1.35, 1.4, 1.6, 1.7, 1.8]:
             add_scale(s)
-        if fast_mode:
-            return scales[:8]
         return scales
 
     def get_scaled_template(self, template_path, scale):
@@ -635,16 +640,15 @@ class VisionMixin:
         return None
 
     def find_new_consumable_car_strict(self, region=None):
-        """两步法识别目标车卡：
-        Step 1: 全屏跑 newCC.png 找候选车卡（必须是 22B-STI 车图）
-        Step 2: 每个候选内部固定位置验 NEW 角标 + B600 等级标签
+        """两步法识别目标车卡（多线程并行版）：
+        Step 1: 并行全屏跑 newCC.png 找候选车卡
+        Step 2: 串行对每个候选内部固定位置验 NEW 角标 + 等级标签
         保留 multi-scale + gray/edge 兜底。
         """
         if not self.is_running:
             return None
         try:
             screen_bgr = self.capture_region(region)
-            # 先按屏幕分辨率算出最可能的缩放比，再补充固定值
             scales = []
             for s in self.get_scales_to_try(fast_mode=False):
                 if s not in scales:
@@ -659,27 +663,25 @@ class VisionMixin:
             MAIN_EDGE_THRESHOLD = 0.20  # 边缘兜底阈值
             MAIN_FALLBACK_MIN = 0.70    # 彩色低于此值直接跳过，不兜底
             TAG_THRESHOLD = 0.85        # NEW 角标内部验阈值
-            CLS_THRESHOLD = 0.85        # B600 等级标签内部验阈值
-            TAG_PAD = 4                 # NEW/B600 内部搜索抗抖动（像素）
+            CLS_THRESHOLD = 0.85        # 等级标签内部验阈值
+            TAG_PAD = 4
             CLS_PAD = 4
 
-            # newCC 内部相对位置（实测：newcartag@220,142 / classB600@192,169 于 265x198 模板）
             TAG_REL_X_RATIO = 220.0 / 265.0
             TAG_REL_Y_RATIO = 142.0 / 198.0
             CLS_REL_X_RATIO = 192.0 / 265.0
             CLS_REL_Y_RATIO = 169.0 / 198.0
 
-            best_candidate = None
-            best_candidate_score = 0.0
-            debug_saved = 0
+            _cls_img = self.config.get("class_image", "classB600.png")
 
+            # === Step 0: 预计算所有 scaled template + mask ===
+            scale_data = {}
             for scale in scales:
                 main_tpl, _ = self.get_scaled_template("newCC.png", scale)
                 tag_tpl, _ = self.get_scaled_template("newcartag.png", scale)
-                class_tpl, _ = self.get_scaled_template("classB600.png", scale)
+                class_tpl, _ = self.get_scaled_template(_cls_img, scale)
                 if main_tpl is None or tag_tpl is None or class_tpl is None:
                     continue
-
                 h_m, w_m = main_tpl.shape[:2]
                 h_t, w_t = tag_tpl.shape[:2]
                 h_c, w_c = class_tpl.shape[:2]
@@ -690,46 +692,102 @@ class VisionMixin:
                 if h_c < 8 or w_c < 20 or h_c > screen_bgr.shape[0] or w_c > screen_bgr.shape[1]:
                     continue
 
-                # 按缩放计算内部相对位置
-                tag_rel_x = int(w_m * TAG_REL_X_RATIO)
-                tag_rel_y = int(h_m * TAG_REL_Y_RATIO)
-                cls_rel_x = int(w_m * CLS_REL_X_RATIO)
-                cls_rel_y = int(h_m * CLS_REL_Y_RATIO)
+                border_px_cc = max(8, int(min(h_m, w_m) * 0.06))
+                main_mask_cc = np.ones((h_m, w_m), dtype=np.uint8) * 255
+                main_mask_cc[:border_px_cc, :] = 0
+                main_mask_cc[-border_px_cc:, :] = 0
+                main_mask_cc[:, :border_px_cc] = 0
+                main_mask_cc[:, -border_px_cc:] = 0
 
-                # === Step 1: 全屏跑 newCC，找候选车卡 ===
-                main_res = cv2.matchTemplate(screen_bgr, main_tpl, cv2.TM_CCOEFF_NORMED)
-                locs = np.where(main_res >= MAIN_FALLBACK_MIN)
-                raw_points = [(int(x), int(y), float(main_res[y, x])) for x, y in zip(*locs[::-1])]
-                raw_points.sort(key=lambda b: -b[2])
+                scale_data[scale] = {
+                    'main_tpl': main_tpl,
+                    'tag_tpl': tag_tpl,
+                    'class_tpl': class_tpl,
+                    'main_mask': main_mask_cc,
+                    'h_m': h_m, 'w_m': w_m,
+                    'h_t': h_t, 'w_t': w_t,
+                    'h_c': h_c, 'w_c': w_c,
+                    'tag_rel_x': int(w_m * TAG_REL_X_RATIO),
+                    'tag_rel_y': int(h_m * TAG_REL_Y_RATIO),
+                    'cls_rel_x': int(w_m * CLS_REL_X_RATIO),
+                    'cls_rel_y': int(h_m * CLS_REL_Y_RATIO),
+                    'main_res_max': 0.0,  # for debug
+                }
 
-                # IoU NMS 去重（替代固定距离去重）
-                nms_input = [(px, py, w_m, h_m, ps) for px, py, ps in raw_points]
-                candidates = [(c[0], c[1], c[4]) for c in self._nms_iou(nms_input, iou_threshold=0.3)]
+            if not scale_data:
+                return None
+
+            # === Step 1: 并行 matchTemplate ===
+            def _match_one_scale(item):
+                scale, sd = item
+                try:
+                    res = cv2.matchTemplate(screen_bgr, sd['main_tpl'], cv2.TM_CCOEFF_NORMED, mask=sd['main_mask'])
+                    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                    locs = np.where(res >= MAIN_FALLBACK_MIN)
+                    raw_points = [(int(x), int(y), float(res[y, x])) for x, y in zip(*locs[::-1])]
+                    raw_points.sort(key=lambda b: -b[2])
+                    nms_input = [(px, py, sd['w_m'], sd['h_m'], ps) for px, py, ps in raw_points]
+                    candidates = [(c[0], c[1], c[4]) for c in self._nms_iou(nms_input, iou_threshold=0.3)]
+                    return (scale, candidates, float(max_val), (int(max_loc[0]), int(max_loc[1])))
+                except Exception:
+                    return (scale, [], 0.0, (0, 0))
+
+            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) - 1))
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                parallel_results = list(ex.map(_match_one_scale, scale_data.items()))
+
+            # 更新 debug 用的 max score
+            for scale, candidates, max_val, max_loc in parallel_results:
+                if scale in scale_data:
+                    scale_data[scale]['main_res_max'] = max_val
+                    scale_data[scale]['main_res_max_loc'] = max_loc
+
+            # 按最佳候选分数降序
+            parallel_results.sort(
+                key=lambda r: max((c[2] for c in r[1]), default=0),
+                reverse=True
+            )
+
+            # === Step 2: 串行验证 ===
+            best_candidate = None
+            best_candidate_score = 0.0
+            debug_saved = 0
+
+            for scale, candidates, max_val, max_loc in parallel_results:
+                sd = scale_data[scale]
+                main_tpl = sd['main_tpl']
+                tag_tpl = sd['tag_tpl']
+                class_tpl = sd['class_tpl']
+                h_m, w_m = sd['h_m'], sd['w_m']
+                h_t, w_t = sd['h_t'], sd['w_t']
+                h_c, w_c = sd['h_c'], sd['w_c']
+                tag_rel_x = sd['tag_rel_x']
+                tag_rel_y = sd['tag_rel_y']
+                cls_rel_x = sd['cls_rel_x']
+                cls_rel_y = sd['cls_rel_y']
 
                 if not candidates:
                     if debug_saved < 3:
                         debug_saved += 1
-                        _, max_main, _, max_loc = cv2.minMaxLoc(main_res)
                         self._save_strict_car_simple(
                             f"no_newcc_scale_{scale:.3f}",
                             screen_bgr=screen_bgr,
                             meta={
                                 "reason": "全屏未找到 newCC 候选",
                                 "scale": float(scale),
-                                "max_newcc_score": float(max_main),
+                                "max_newcc_score": float(max_val),
                                 "main_threshold": float(MAIN_THRESHOLD),
                                 "fallback_min": float(MAIN_FALLBACK_MIN),
                             },
                             anno={
-                                "title": f"缩放{scale:.3f} 无 newCC 候选 (最高{max_main:.3f})",
+                                "title": f"缩放{scale:.3f} 无 newCC 候选 (最高{max_val:.3f})",
                                 "tag_boxes": [],
                                 "class_boxes": [],
-                                "max_tag_loc": (int(max_loc[0]), int(max_loc[1]), int(w_m), int(h_m), float(max_main)),
+                                "max_tag_loc": (max_loc[0], max_loc[1], int(w_m), int(h_m), float(max_val)),
                             },
                         )
                     continue
 
-                # === Step 2: 对每个候选车卡做内部验证 ===
                 for car_x, car_y, car_score in candidates:
                     # --- 2a: 判断车卡是否可信（彩色优先，灰度+边缘兜底）---
                     is_card_valid = False
@@ -739,7 +797,6 @@ class VisionMixin:
                     if car_score >= MAIN_THRESHOLD:
                         is_card_valid = True
                     elif car_score >= MAIN_FALLBACK_MIN:
-                        # 灰度+边缘兜底
                         try:
                             patch = screen_bgr[car_y:car_y + h_m, car_x:car_x + w_m]
                             if patch.shape[:2] == main_tpl.shape[:2]:
@@ -783,7 +840,7 @@ class VisionMixin:
                         )
                         continue
 
-                    # --- 2c: 在车卡内部固定位置验 B600 等级 ---
+                    # --- 2c: 在车卡内部固定位置验等级标签 ---
                     cx0 = car_x + cls_rel_x
                     cy0 = car_y + cls_rel_y
                     cx1 = max(0, cx0 - CLS_PAD)
@@ -798,7 +855,7 @@ class VisionMixin:
 
                     if cls_score < CLS_THRESHOLD:
                         self.log(
-                            f"[StrictCar] 车卡({car_x},{car_y}) B600 不足: "
+                            f"[StrictCar] 车卡({car_x},{car_y}) 等级标签不足: "
                             f"cls={cls_score:.3f}<{CLS_THRESHOLD} tag={tag_score:.3f} car={car_score:.3f} scale={scale:.3f}"
                         )
                         continue
@@ -840,7 +897,6 @@ class VisionMixin:
                         best_candidate = (click_x + off_x, click_y + off_y, car_x, car_y,
                                           car_score, tag_score, cls_score, gray_score, edge_score, scale)
 
-                        # 保存成功调试快照
                         if debug_saved < 5:
                             debug_saved += 1
                             self._save_strict_car_simple(
@@ -848,7 +904,7 @@ class VisionMixin:
                                 screen_bgr=screen_bgr,
                                 meta=self.last_strict_car_meta,
                                 anno={
-                                    "title": f"锁定目标 car={car_score:.2f} tag={tag_score:.2f} b600={cls_score:.2f}",
+                                    "title": f"锁定目标 car={car_score:.2f} tag={tag_score:.2f} cls={cls_score:.2f}",
                                     "tag_boxes": [(int(tx0), int(ty0), int(w_t), int(h_t), float(tag_score))],
                                     "class_boxes": [(int(cx0), int(cy0), int(w_c), int(h_c), float(cls_score))],
                                     "max_tag_loc": (int(car_x), int(car_y), int(w_m), int(h_m), float(car_score)),
@@ -864,35 +920,13 @@ class VisionMixin:
                 )
                 return (x, y)
 
-            self.log("[StrictCar] 本帧未找到达标目标车，尝试 HSV 颜色预筛兜底...")
-            # 保存最终失败快照
+            self.log("[StrictCar] 本帧未找到达标目标车，返回 None（由翻页逻辑继续查找）")
             if debug_saved < 5:
                 self._save_strict_car_simple(
                     "final_no_target",
                     screen_bgr=screen_bgr,
                     meta={"reason": "所有缩放均未找到达标目标"},
                 )
-
-            # === HSV 颜色预筛兜底：从黄色 NEW 标签反推车卡位置 ===
-            for fb_scale in scales:
-                tag_tpl_fb, _ = self.get_scaled_template("newcartag.png", fb_scale)
-                if tag_tpl_fb is None:
-                    continue
-                color_candidates = self.find_new_tag_by_color(screen_bgr, tag_tpl_fb, fb_scale)
-                if not color_candidates:
-                    continue
-                for tag_score_fb, card_x, card_y, card_w, card_h, center_x, center_y, tag_x, tag_y, tag_w, tag_h in color_candidates:
-                    validated = self.validate_new_tag_grid_fallback(screen_bgr, tag_x, tag_y, tag_w, tag_h)
-                    if validated is None:
-                        continue
-                    click_x_fb, click_y_fb, white_ratio, orange_ratio = validated
-                    off_x = region[0] if region else 0
-                    off_y = region[1] if region else 0
-                    self.log(
-                        f"[StrictCar] HSV 兜底命中: tag={tag_score_fb:.3f} "
-                        f"white={white_ratio:.3f} orange={orange_ratio:.3f} scale={fb_scale:.3f}"
-                    )
-                    return (click_x_fb + off_x, click_y_fb + off_y)
 
             return None
         except Exception as e:
@@ -1747,8 +1781,8 @@ class VisionMixin:
     # =================================================================
 
     def find_skill_car_strict(self, region=None):
-        """严格匹配 skillcar 车卡：
-        Step 1: 全屏跑 skillcar.png 找候选（限定缩放 0.60~1.20）
+        """严格匹配 skillcar 车卡（多线程并行版）：
+        Step 1: 并行全屏跑 skillcar.png 找候选（限定缩放 0.40~1.20）
         Step 2: 每个候选内部右下象限区域验 liketag.png 或 drivingtag.png
         返回: (x, y) 或 None
         """
@@ -1759,8 +1793,7 @@ class VisionMixin:
             if screen_bgr is None:
                 return None
 
-            # 缩放范围：0.40 ~ 1.20，优先尝试接近预期值
-            # 注意：不同分辨率屏幕下所需缩放比差异大（1080p≈0.80, 720p≈0.55）
+            # 缩放范围
             base_scales = [1.0, 0.85, 0.75, 0.65, 0.55, 0.95, 0.90, 0.80, 0.70, 0.60, 0.50, 0.45, 0.40, 1.05, 1.10, 1.15, 1.20]
             scales = []
             for s in base_scales:
@@ -1769,26 +1802,23 @@ class VisionMixin:
 
             # 阈值常量
             MAIN_THRESHOLD = 0.75       # skillcar 彩色主阈值
-            MAIN_FALLBACK_MIN = 0.50    # matchTemplate 预筛下限（非车卡验证阈值）
+            MAIN_FALLBACK_MIN = 0.50    # matchTemplate 预筛下限
             TAG_THRESHOLD = 0.75        # liketag 内部验阈值
 
-            # liketag 搜索区域：右下象限（容忍不同分辨率下的比例差异）
-            # 实测：1080p liketag@x=0.899, 720p liketag@x=0.806 -> 用范围覆盖
-            TAG_X_MIN_RATIO = 0.65       # 搜索起点 X（宽度的 65%）
-            TAG_X_MAX_RATIO = 0.98       # 搜索终点 X（宽度的 98%）
-            TAG_Y_MIN_RATIO = 0.60       # 搜索起点 Y（高度的 60%）
-            TAG_Y_MAX_RATIO = 0.88       # 搜索终点 Y（高度的 88%）
+            # liketag 搜索区域：右下象限
+            TAG_X_MIN_RATIO = 0.65
+            TAG_X_MAX_RATIO = 0.98
+            TAG_Y_MIN_RATIO = 0.60
+            TAG_Y_MAX_RATIO = 0.88
 
-            best_candidate = None
-            best_candidate_score = 0.0
-
+            # === Step 0: 预计算所有 scaled template + mask（线程安全）===
+            scale_data = {}
             for scale in scales:
                 main_tpl, _ = self.get_scaled_template("skillcar.png", scale)
                 tag_tpl, _ = self.get_scaled_template("liketag.png", scale)
                 drv_tpl, _ = self.get_scaled_template("drivingtag.png", scale)
                 if main_tpl is None or tag_tpl is None:
                     continue
-
                 h_m, w_m = main_tpl.shape[:2]
                 h_t, w_t = tag_tpl.shape[:2]
                 h_d, w_d = drv_tpl.shape[:2] if drv_tpl is not None else (0, 0)
@@ -1797,32 +1827,79 @@ class VisionMixin:
                 if h_t < 8 or w_t < 8:
                     continue
 
-                # 按缩放计算 liketag 搜索区域（右下象限）
+                # 创建边框 mask
+                border_px = max(10, int(min(h_m, w_m) * 0.08))
+                main_mask = np.ones((h_m, w_m), dtype=np.uint8) * 255
+                main_mask[:border_px, :] = 0
+                main_mask[-border_px:, :] = 0
+                main_mask[:, :border_px] = 0
+                main_mask[:, -border_px:] = 0
+
+                # liketag 搜索区域偏移
                 tag_x_start = int(w_m * TAG_X_MIN_RATIO)
                 tag_x_end = int(w_m * TAG_X_MAX_RATIO)
                 tag_y_start = int(h_m * TAG_Y_MIN_RATIO)
                 tag_y_end = int(h_m * TAG_Y_MAX_RATIO)
 
-                # === Step 1: 全屏跑 skillcar，找候选 ===
-                main_res = cv2.matchTemplate(screen_bgr, main_tpl, cv2.TM_CCOEFF_NORMED)
-                locs = np.where(main_res >= MAIN_FALLBACK_MIN)
-                raw_points = [(int(x), int(y), float(main_res[y, x])) for x, y in zip(*locs[::-1])]
-                raw_points.sort(key=lambda b: -b[2])
+                scale_data[scale] = {
+                    'main_tpl': main_tpl,
+                    'tag_tpl': tag_tpl,
+                    'drv_tpl': drv_tpl,
+                    'main_mask': main_mask,
+                    'h_m': h_m, 'w_m': w_m,
+                    'h_t': h_t, 'w_t': w_t,
+                    'h_d': h_d, 'w_d': w_d,
+                    'tag_x_start': tag_x_start, 'tag_x_end': tag_x_end,
+                    'tag_y_start': tag_y_start, 'tag_y_end': tag_y_end,
+                }
 
-                # IoU NMS 去重
-                nms_input = [(px, py, w_m, h_m, ps) for px, py, ps in raw_points]
-                candidates = [(c[0], c[1], c[4]) for c in self._nms_iou(nms_input, iou_threshold=0.3)]
+            if not scale_data:
+                return None
 
-                if not candidates:
-                    continue
+            # === Step 1: 并行 matchTemplate ===
+            def _match_one_scale(item):
+                scale, sd = item
+                try:
+                    res = cv2.matchTemplate(screen_bgr, sd['main_tpl'], cv2.TM_CCOEFF_NORMED, mask=sd['main_mask'])
+                    locs = np.where(res >= MAIN_FALLBACK_MIN)
+                    raw_points = [(int(x), int(y), float(res[y, x])) for x, y in zip(*locs[::-1])]
+                    raw_points.sort(key=lambda b: -b[2])
+                    nms_input = [(px, py, sd['w_m'], sd['h_m'], ps) for px, py, ps in raw_points]
+                    candidates = [(c[0], c[1], c[4]) for c in self._nms_iou(nms_input, iou_threshold=0.3)]
+                    return (scale, candidates)
+                except Exception:
+                    return (scale, [])
 
-                # === Step 2: 对每个候选做内部 liketag 验证 ===
+            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) - 1))
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                parallel_results = list(ex.map(_match_one_scale, scale_data.items()))
+
+            # 按 best candidate score 降序排列
+            parallel_results.sort(
+                key=lambda r: max((c[2] for c in r[1]), default=0),
+                reverse=True
+            )
+
+            best_candidate = None
+            best_candidate_score = 0.0
+
+            for scale, candidates in parallel_results:
+                sd = scale_data[scale]
+                h_m, w_m = sd['h_m'], sd['w_m']
+                tag_tpl = sd['tag_tpl']
+                drv_tpl = sd['drv_tpl']
+                h_t, w_t = sd['h_t'], sd['w_t']
+                h_d, w_d = sd['h_d'], sd['w_d']
+                tag_x_start = sd['tag_x_start']
+                tag_x_end = sd['tag_x_end']
+                tag_y_start = sd['tag_y_start']
+                tag_y_end = sd['tag_y_end']
+
                 for car_x, car_y, car_score in candidates:
-                    # --- 2a: 车卡可信度判断（严格模式：无灰度兜底）---
                     if car_score < MAIN_THRESHOLD:
                         continue
 
-                    # --- 2b: 在右下象限区域搜索 liketag 或 drivingtag ---
+                    # 在右下象限搜索 liketag 或 drivingtag
                     tx1 = max(0, car_x + tag_x_start)
                     ty1 = max(0, car_y + tag_y_start)
                     tx2 = min(screen_bgr.shape[1], car_x + tag_x_end + w_t)
@@ -1833,7 +1910,6 @@ class VisionMixin:
                     tag_res = cv2.matchTemplate(tag_search, tag_tpl, cv2.TM_CCOEFF_NORMED)
                     _, tag_score, _, _ = cv2.minMaxLoc(tag_res)
 
-                    # 也搜索 drivingtag（驾驶中的车独有，比 liketag 更唯一）
                     drv_score = 0.0
                     if drv_tpl is not None and h_d >= 8 and w_d >= 8:
                         drv_tx2 = min(screen_bgr.shape[1], car_x + tag_x_end + w_d)
@@ -1843,7 +1919,6 @@ class VisionMixin:
                             drv_res = cv2.matchTemplate(drv_search, drv_tpl, cv2.TM_CCOEFF_NORMED)
                             _, drv_score, _, _ = cv2.minMaxLoc(drv_res)
 
-                    # liketag 或 drivingtag 任一通过即可
                     tag_passed = tag_score >= TAG_THRESHOLD
                     drv_passed = drv_score >= TAG_THRESHOLD
                     if not tag_passed and not drv_passed:
@@ -1854,14 +1929,12 @@ class VisionMixin:
                         )
                         continue
 
-                    # drivingtag 命中时额外加分（只有当前驾驶的车才有）
                     effective_score = car_score
                     tag_type = "like"
                     if drv_passed:
                         effective_score += 0.05
                         tag_type = "drv"
 
-                    # === 通过验证，记录候选 ===
                     self.log(
                         f"[SkillCarStrict] 发现达标候选: car=({car_x},{car_y}) "
                         f"car={car_score:.3f} {tag_type}={max(tag_score, drv_score):.3f} "

@@ -187,23 +187,6 @@ class SellMixin:
             if pos_target:
                 self.detail_state_confirmed = True
 
-            # P 键切换详情状态重试(SendMessage 强发)
-            if not pos_target and not self.detail_state_confirmed:
-                self.log("未找到目标车辆，尝试按 P 切换详情状态(SendMessage强发)...")
-                self.hw_press("p", use_send=True)
-                time.sleep(0.6)
-                pos_target = self.wait_for_image_ultimate_safe(
-                    main_path="removecarobject.png",
-                    anti_path="newcartag.png",
-                    region=self.regions["全界面"],
-                    main_threshold=0.77,
-                    anti_threshold=0.65,
-                    timeout=1.0,
-                    interval=0.2
-                )
-                if pos_target:
-                    self.detail_state_confirmed = True
-
             if not pos_target:
                 not_found_pages += 1
                 if not_found_pages >= 5:

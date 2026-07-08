@@ -326,18 +326,6 @@ class RaceMixin:
         if pos_target:
             self.detail_state_confirmed = True
 
-        # 如果没找到，而且之前从未确认过状态，则按下 P 键再找一次
-        if not pos_target and not self.detail_state_confirmed:
-            self.log("当前页面未找到车辆，尝试按 P 切换详情状态(SendMessage强发)...")
-            time.sleep(0.3)
-            self.hw_press("p", use_send=True)
-            time.sleep(1.0)
-            self.hw_press("p", use_send=True)
-            time.sleep(0.6)
-            pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
-            if pos_target:
-                self.detail_state_confirmed = True
-
         if not pos_target:
             self.log("严格匹配未命中：skillcar + liketag 固定位置验证未通过，重新选品牌...")
             self._save_race_car_debug(
@@ -345,7 +333,6 @@ class RaceMixin:
                 note="初次严格匹配未命中，保存 skillcar/liketag 最佳匹配情况",
                 extra={"main": "skillcar.png", "sub": "liketag.png"}
             )
-        if not pos_target:
             self.log("未找到带 liketag 的目标车辆,重新选品牌...")
             self.hw_press("backspace")
             time.sleep(1.2)
@@ -376,14 +363,6 @@ class RaceMixin:
                 pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
                 if pos_target:
                     self.detail_state_confirmed = True
-
-                if not pos_target and not self.detail_state_confirmed:
-                    self.log("当前页面未找到车辆，尝试按 P 切换详情状态(SendMessage强发)...")
-                    self.hw_press("p", use_send=True)
-                    time.sleep(0.6)
-                    pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
-                    if pos_target:
-                        self.detail_state_confirmed = True
 
                 if not pos_target:
                     self.log("严格匹配未命中：skillcar + liketag 固定位置验证未通过，本页跳过。")

@@ -157,7 +157,7 @@ class CJMixin:
             return None
 
     def _verify_target_point_b600(self, pos_target, threshold=0.72):
-        """二次硬校验：目标点击点附近必须仍能匹配到 B600。
+        """二次硬校验：目标点击点附近必须仍能匹配到等级标签。
 
         防止全新标签/车辆图片局部相似时，把 C466/D 等级的新车误当作目标 22B 上车。
         """
@@ -167,26 +167,28 @@ class CJMixin:
             strict_meta = getattr(self, "last_strict_car_meta", None) or {}
             strict_class_score = float(strict_meta.get("class_score", 0.0) or 0.0)
             # 严格识别阶段是在点击/hover 前完成的，可信度最高；点击后选中框会改变局部外观，
-            # 不能用 hover 后的小区域匹配反过来否定前面的高置信 B600。
+            # 不能用 hover 后的小区域匹配反过来否定前面的高置信等级标签。
             if strict_class_score >= threshold:
-                self.log(f"[Safety] 使用严格识别阶段 B600 分数通过二次校验: {strict_class_score:.3f} >= {threshold:.2f}")
+                _cls_img = self.config.get("class_image", "classB600.png")
+                self.log(f"[Safety] 使用严格识别阶段 {_cls_img} 分数通过二次校验: {strict_class_score:.3f} >= {threshold:.2f}")
                 return True
 
             x, y = int(pos_target[0]), int(pos_target[1])
             region = (max(0, x - 160), max(0, y - 100), 320, 200)
-            pos = self.find_image_gray("classB600.png", region=region, threshold=threshold, fast_mode=False)
+            _cls_img = self.config.get("class_image", "classB600.png")
+            pos = self.find_image_gray(_cls_img, region=region, threshold=threshold, fast_mode=False)
             if pos:
                 return True
-            self.log(f"[Safety] 目标点附近未通过 B600 二次校验，拒绝上车: pos={pos_target} threshold={threshold} strict_class_score={strict_class_score:.3f}")
+            self.log(f"[Safety] 目标点附近未通过 {_cls_img} 二次校验，拒绝上车: pos={pos_target} threshold={threshold} strict_class_score={strict_class_score:.3f}")
             self._save_car_select_debug(
                 "b600_verify_failed",
                 pos_target=pos_target,
-                note="目标点附近未找到 B600，疑似误识别车型，已拒绝上车",
+                note="目标点附近未找到等级标签，疑似误识别车型，已拒绝上车",
                 extra={"verify_region": region, "threshold": threshold, "strict_meta": strict_meta}
             )
             return False
         except Exception as e:
-            self.log(f"[Safety] B600 二次校验异常，拒绝上车: {e}")
+            self.log(f"[Safety] 等级标签二次校验异常，拒绝上车: {e}")
             return False
 
     def _keyboard_select_target_card(self, pos_target):
@@ -419,18 +421,6 @@ class CJMixin:
 
                 if pos_target:
                     self.detail_state_confirmed = True
-
-                # 本页没找到→按 P 切换详情状态重搜一次
-                if not pos_target:
-                    self.log(f"第 {page_idx+1} 页未找到车辆，按 P 切换详情状态重搜(SendMessage强发)...")
-                    time.sleep(0.3)
-                    self.hw_press("p", use_send=True)
-                    time.sleep(1.0)
-                    pos_target = self.wait_for_new_consumable_car_strict(timeout=3.0, interval=0.2)
-                    if pos_target:
-                        self.detail_state_confirmed = True
-
-                if pos_target:
                     self._save_car_select_debug(
                         "before_target_sendmessage_click",
                         pos_target=pos_target,
@@ -463,12 +453,12 @@ class CJMixin:
                         )
                     time.sleep(0.5)
                     if not self._verify_target_point_b600(pos_target, threshold=0.72):
-                        self.log("当前候选不满足目标 B600 硬条件，判定本屏/本批无可安全处理目标，结束超抽步骤。")
+                        self.log("当前候选不满足目标等级标签硬条件，判定本屏/本批无可安全处理目标，结束超抽步骤。")
                         return True
                     self._save_car_select_debug(
                         "before_enter_select",
                         pos_target=pos_target,
-                        note="主点强点结束，B600 二次校验通过，准备按 Enter 选择当前焦点车卡",
+                        note="主点强点结束，等级标签二次校验通过，准备按 Enter 选择当前焦点车卡",
                         extra={"current_page": current_page, "all_points": [list(p) for p in click_points_to_try]}
                     )
                     # 强点会 hover/选中车卡，但当前界面仍需要 Enter 选择，才会进入“上车”菜单。
@@ -493,7 +483,7 @@ class CJMixin:
                 time.sleep(0.65)
                 current_page += 1
             if not found_car:
-                self.log("列表中未找到满足【全新+B600+目标车型】硬条件的车辆，重置记忆页码并结束超抽步骤。")
+                self.log("列表中未找到满足【全新+等级标签+目标车型】硬条件的车辆，重置记忆页码并结束超抽步骤。")
                 self.memory_car_page = 0 # 没找到说明车刷完了,清零记忆
                 return True
             already_boarding = self._is_boarding_transition()

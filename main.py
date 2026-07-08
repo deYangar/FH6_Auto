@@ -24,7 +24,8 @@ import focus_hook_manager
 from config import (
     APP_DIR, INTERNAL_DIR, USER_CONFIG_FILE, LOG_FILE,
     CACHE_DIR, TEMPLATE_CACHE_FILE, TEMPLATE_META_FILE, CURRENT_VERSION,
-    auto_extract_configs, auto_extract_images, get_img_path, get_asset_path
+    auto_extract_configs, auto_extract_images, get_img_path, get_asset_path,
+    set_scheme_dir
 )
 from constants import DIK_CODES, MATCH_THRESHOLD
 from input_handler import InputMixin
@@ -89,6 +90,7 @@ class FH_UltimateBot(
         self._init_anti_cheat_state()
 
         self.init_regions()
+        self._log_buffer = []  # 提前初始化，避免后台线程竞态
 
         # 【优化加载速度】:将IO提取与图像缓存的加载/生成放到后台线程,避免阻塞主界面启动
         # 增加模型释放步骤
@@ -101,16 +103,20 @@ class FH_UltimateBot(
         #加载配置文件
         auto_extract_configs()
         self.load_config()
+        _scheme_idx = self.config.get("current_scheme", 0)
+        set_scheme_dir(f"scheme_{_scheme_idx + 1}")
 
         self.setup_ui()
         self.start_hotkey_listener()
         self.update_skill_grid()
         self.center_window()
         self.after(1200, self.auto_focus_hook_on_start)
+        self.after(2000, self.check_for_updates)
 
         self.log("免责声明:本脚本仅供 Python 自动化技术交流与学习使用。请勿用于商业盈利或破坏游戏平衡,因使用本脚本造成的账号封禁等损失,由使用者自行承担。")
         self.log("工具运行目录不要有中文")
         self.log("默认刷图车辆:【斯巴鲁Impreza 22B-STi Version】【调校S2  900】【保持默认涂装】【收藏车辆】")
+        self.log("方案2采用【斯巴鲁Impreza 22B-STi Version】来跑图，采用【1974 马自达 #123 Mad Mike 808 Wagon】来抽奖，适合有通行证的玩家使用。没有车辆通行证的玩家请勿选择")
         self.log("游戏设置为【自动转向】【自动挡】,游戏语言设置为【简体中文】")
         self.log("大部分以图像识别作为引导,减少机器盲目操作的风险,但仍无法完全避免,使用前请做好准备")
 
@@ -120,6 +126,114 @@ class FH_UltimateBot(
             self.after(0, lambda: func(*args, **kwargs))
         except Exception:
             pass
+
+    def _open_releases_page(self):
+        """点击版本号打开 GitHub Releases 页面。"""
+        import webbrowser
+        webbrowser.open("https://github.com/deYangar/FH6_Auto/releases")
+
+    def check_for_updates(self):
+        """检查 GitHub Releases 是否有新版本。"""
+        import urllib.request, ssl, re
+        def _check():
+            try:
+                # 直接抓 releases 页面 HTML（不走 API，无速率限制）
+                url = "https://github.com/deYangar/FH6_Auto/releases"
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                try:
+                    ctx = ssl.create_default_context()
+                    with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                        html = resp.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                        html = resp.read().decode("utf-8", errors="ignore")
+
+                # 从 HTML 中提取最新 release tag（如 v1.2.0.0）
+                # 页面标题或 release 卡片中会有 tag
+                m = re.search(r'/deYangar/FH6_Auto/releases/tag/(v?[\d.]+)', html)
+                if not m:
+                    m = re.search(r'<span[^>]*>\s*(v[\d.]+)\s*</span>', html)
+                if not m:
+                    self.ui_call(lambda: self.log("[更新检查] 未找到版本号"))
+                    return
+
+                latest_tag = m.group(1)
+                latest_ver = latest_tag.lstrip("v").strip()
+                cur_ver = CURRENT_VERSION.strip()
+
+                def _ver_tuple(v):
+                    parts = []
+                    for p in v.split("."):
+                        try:
+                            parts.append(int(p))
+                        except Exception:
+                            parts.append(0)
+                    return tuple(parts)
+
+                is_newer = _ver_tuple(latest_ver) > _ver_tuple(cur_ver)
+                release_url = "https://github.com/deYangar/FH6_Auto/releases"
+                if is_newer:
+                    self.ui_call(lambda: self._on_update_found(latest_tag, release_url, ""))
+                else:
+                    self.ui_call(lambda: self._on_up_to_date())
+            except Exception as e:
+                # 写文件日志 + UI 日志双保险
+                try:
+                    import traceback
+                    with open(os.path.join(os.path.dirname(sys.executable), "update_debug.log"), "w", encoding="utf-8") as f:
+                        f.write(f"{e}\n\n{traceback.format_exc()}")
+                except Exception:
+                    pass
+                self.ui_call(lambda: self.log(f"[更新检查] 失败: {e}"))
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _on_up_to_date(self):
+        """已是最版本：右上角显示“最新版”。"""
+        try:
+            self.version_label.configure(text=f"v{CURRENT_VERSION} ✓ 最新版", text_color="#27AE60")
+        except Exception:
+            pass
+
+    def _on_update_found(self, latest_tag, release_url, body):
+        """有新版本：右上角闪烁提示 + 弹对话框。"""
+        try:
+            self._update_release_url = release_url
+            self._update_blinking = True
+            self._blink_update_label(latest_tag)
+        except Exception:
+            pass
+        import webbrowser
+        msg = f"发现新版本 {latest_tag}！\n\n"
+        if body:
+            msg += body[:500] + "\n\n"
+        msg += "点击确定后将在浏览器打开下载页面。"
+        from tkinter import messagebox
+        result = messagebox.showinfo("发现新版本", msg, parent=self)
+        if result == "ok":
+            webbrowser.open(release_url)
+
+    def _blink_update_label(self, latest_tag):
+        """右上角版本标签闪烁提示。"""
+        if not self._update_blinking:
+            return
+        try:
+            current_text = self.version_label.cget("text")
+            if "🔔" in current_text:
+                self.version_label.configure(
+                    text=f"🔔 新版本 {latest_tag} 可用!",
+                    text_color="#E74C3C"
+                )
+            else:
+                self.version_label.configure(
+                    text=f"v{CURRENT_VERSION} (有新版 {latest_tag})",
+                    text_color="#E67E22"
+                )
+        except Exception:
+            pass
+        self.after(600, lambda: self._blink_update_label(latest_tag))
 
     def center_window(self):
         self.update_idletasks()
@@ -194,6 +308,9 @@ class FH_UltimateBot(
     def load_config(self):
         # 1. 直接使用内置字典作为"绝对底本"(最安全,无视打包丢文件问题)
         self.config = {
+            "current_scheme": 0,
+            "schemes": [],
+            "class_image": "classB600.png",
             "race_count": 99,
             "buy_count": 30,
             "cj_count": 30,
@@ -215,7 +332,7 @@ class FH_UltimateBot(
             "auto_close_game": False,
             "auto_shutdown": False,
             "diagnostic_mode": False,
-            "sell_count": 10,
+            "sell_count": 30,
             "chk_4": True,
             "next_4": 1
         }
@@ -229,7 +346,50 @@ class FH_UltimateBot(
             except Exception as e:
                 self.log(f"用户 config.json 损坏,已自动恢复默认配置。")
 
-        # 3. 将最新、最完整的配置重新写回外置文件
+        # 3. 方案迁移：旧配置没有 schemes 结构时自动迁移
+        if not self.config.get("schemes"):
+            scheme_1 = {
+                "name": "方案1",
+                "class_image": self.config.get("class_image", "classB600.png"),
+                "race_count": self.config.get("race_count", 99),
+                "buy_count": self.config.get("buy_count", 30),
+                "cj_count": self.config.get("cj_count", 30),
+                "sell_count": self.config.get("sell_count", 30),
+                "skill_dirs": self.config.get("skill_dirs", ["right", "up", "up", "up", "left"]),
+                "share_code": self.config.get("share_code", "890169683"),
+                "cj_mode": self.config.get("cj_mode", 1),
+                "chk_1": self.config.get("chk_1", True),
+                "chk_2": self.config.get("chk_2", True),
+                "chk_3": self.config.get("chk_3", True),
+                "chk_4": self.config.get("chk_4", True),
+                "next_1": self.config.get("next_1", 2),
+                "next_2": self.config.get("next_2", 3),
+                "next_3": self.config.get("next_3", 1),
+                "next_4": self.config.get("next_4", 1),
+            }
+            schemes = [scheme_1]
+            # 检查是否有方案2的图片目录（同时检查外置和内置目录，避免后台解压竞态）
+            scheme_2_ext = os.path.join(APP_DIR, "images", "scheme_2")
+            scheme_2_int = os.path.join(INTERNAL_DIR, "images", "scheme_2")
+            if os.path.isdir(scheme_2_ext) or os.path.isdir(scheme_2_int):
+                scheme_2 = dict(scheme_1)
+                scheme_2["name"] = "方案2 - （需要有通行证）Mad Mike 马自达超抽"
+                scheme_2["class_image"] = "classS1702.png"
+                scheme_2["skill_dirs"] = ["right", "right", "up", "up", "up"]
+                scheme_2["buy_count"] = 45
+                scheme_2["cj_count"] = 45
+                scheme_2["sell_count"] = 45
+                schemes.append(scheme_2)
+            self.config["schemes"] = schemes
+            self.config["current_scheme"] = 0
+
+        # 确保顶层 class_image 与当前方案同步
+        _idx = self.config.get("current_scheme", 0)
+        _schemes = self.config.get("schemes", [])
+        if 0 <= _idx < len(_schemes):
+            self.config["class_image"] = _schemes[_idx].get("class_image", "classB600.png")
+
+        # 4. 将最新、最完整的配置重新写回外置文件
         try:
             with open(ext_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
@@ -273,11 +433,209 @@ class FH_UltimateBot(
             self.config["auto_shutdown"] = self.var_auto_shutdown.get()
         if hasattr(self, "var_diagnostic_mode"):
             self.config["diagnostic_mode"] = self.var_diagnostic_mode.get()
+        # 同步当前方案
+        self._sync_to_current_scheme()
         try:
             with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
         except Exception as e:
             self.log(f"保存配置失败: {e}")
+
+    # ====== 方案管理 ======
+
+    def _sync_to_current_scheme(self):
+        """将当前顶层配置同步到当前方案"""
+        idx = self.config.get("current_scheme", 0)
+        schemes = self.config.get("schemes", [])
+        if idx < 0 or idx >= len(schemes):
+            return
+        scheme = schemes[idx]
+        for k in [
+            "class_image", "race_count", "buy_count", "cj_count",
+            "sell_count", "skill_dirs", "share_code", "cj_mode",
+            "chk_1", "chk_2", "chk_3", "chk_4",
+            "next_1", "next_2", "next_3", "next_4"
+        ]:
+            if k in self.config:
+                scheme[k] = self.config[k]
+
+    def refresh_scheme_menu(self):
+        """刷新方案下拉菜单"""
+        schemes = self.config.get("schemes", [])
+        values = [s.get("name", f"方案{i+1}") for i, s in enumerate(schemes)]
+        if hasattr(self, "scheme_menu"):
+            self.scheme_menu.configure(values=values if values else ["方案1"])
+            idx = self.config.get("current_scheme", 0)
+            if 0 <= idx < len(values):
+                self.scheme_menu.set(values[idx])
+
+    def on_scheme_switch(self, choice):
+        """方案下拉菜单切换回调"""
+        schemes = self.config.get("schemes", [])
+        target_idx = -1
+        for i, s in enumerate(schemes):
+            if s.get("name", f"方案{i+1}") == choice:
+                target_idx = i
+                break
+        if target_idx < 0 or target_idx == self.config.get("current_scheme", 0):
+            return
+        self.switch_scheme(target_idx)
+
+    def switch_scheme(self, idx):
+        """切换到指定方案"""
+        schemes = self.config.get("schemes", [])
+        if idx < 0 or idx >= len(schemes):
+            return
+        # 保存当前方案
+        self._sync_to_current_scheme()
+        # 切换
+        self.config["current_scheme"] = idx
+        scheme = schemes[idx]
+        # 同步方案到顶层配置
+        for k, v in scheme.items():
+            self.config[k] = v
+        # 更新图片目录
+        set_scheme_dir(f"scheme_{idx + 1}")
+        # 清除内存模板缓存
+        self.template_cache.clear()
+        self.scaled_template_cache.clear()
+        if hasattr(self, "template_gray_cache"):
+            self.template_gray_cache.clear()
+        if hasattr(self, "template_transparent_cache"):
+            self.template_transparent_cache.clear()
+        # 应用到 UI
+        self.apply_scheme_to_ui(scheme)
+        # 保存
+        self.save_config()
+        self.log(f"已切换到方案: {scheme.get('name', f'方案{idx+1}')}")
+
+    def apply_scheme_to_ui(self, scheme):
+        """将方案数据应用到 UI 控件"""
+        if hasattr(self, "entry_race"):
+            self.entry_race.delete(0, "end")
+            self.entry_race.insert(0, str(scheme.get("race_count", 99)))
+        if hasattr(self, "entry_car"):
+            self.entry_car.delete(0, "end")
+            self.entry_car.insert(0, str(scheme.get("buy_count", 30)))
+        if hasattr(self, "entry_cj"):
+            self.entry_cj.delete(0, "end")
+            self.entry_cj.insert(0, str(scheme.get("cj_count", 30)))
+        if hasattr(self, "entry_sc"):
+            self.entry_sc.delete(0, "end")
+            self.entry_sc.insert(0, str(scheme.get("sell_count", 30)))
+        if hasattr(self, "entry_share"):
+            self.entry_share.delete(0, "end")
+            self.entry_share.insert(0, str(scheme.get("share_code", "890169683")))
+        if hasattr(self, "entry_next1"):
+            self.entry_next1.delete(0, "end")
+            self.entry_next1.insert(0, str(scheme.get("next_1", 2)))
+        if hasattr(self, "entry_next2"):
+            self.entry_next2.delete(0, "end")
+            self.entry_next2.insert(0, str(scheme.get("next_2", 3)))
+        if hasattr(self, "entry_next3"):
+            self.entry_next3.delete(0, "end")
+            self.entry_next3.insert(0, str(scheme.get("next_3", 1)))
+        if hasattr(self, "entry_next4"):
+            self.entry_next4.delete(0, "end")
+            self.entry_next4.insert(0, str(scheme.get("next_4", 1)))
+        if hasattr(self, "var_chk1"):
+            self.var_chk1.set(scheme.get("chk_1", True))
+        if hasattr(self, "var_chk2"):
+            self.var_chk2.set(scheme.get("chk_2", True))
+        if hasattr(self, "var_chk3"):
+            self.var_chk3.set(scheme.get("chk_3", True))
+        if hasattr(self, "var_chk4"):
+            self.var_chk4.set(scheme.get("chk_4", True))
+        if hasattr(self, "opt_cj_mode"):
+            cj_mode = scheme.get("cj_mode", 1)
+            if cj_mode == 2:
+                self.opt_cj_mode.set("模式2: 从设计与喷涂开始")
+            else:
+                self.opt_cj_mode.set("模式1: 从我的车辆开始")
+        self.config["skill_dirs"] = scheme.get("skill_dirs", ["right", "up", "up", "up", "left"])
+        if hasattr(self, "update_skill_grid"):
+            self.update_skill_grid()
+        if hasattr(self, "lbl_race"):
+            self.lbl_race.configure(text=f"执行: 0 / {scheme.get('race_count', 99)}")
+        if hasattr(self, "lbl_car"):
+            self.lbl_car.configure(text=f"执行: 0 / {scheme.get('buy_count', 30)}")
+        if hasattr(self, "lbl_cj"):
+            self.lbl_cj.configure(text=f"执行: 0 / {scheme.get('cj_count', 30)}")
+        if hasattr(self, "lbl_sc"):
+            self.lbl_sc.configure(text=f"执行: 0 / {scheme.get('sell_count', 30)}")
+
+    def new_scheme(self):
+        """新建方案"""
+        schemes = self.config.get("schemes", [])
+        new_idx = len(schemes)
+        current_idx = self.config.get("current_scheme", 0)
+        if 0 <= current_idx < len(schemes):
+            base = dict(schemes[current_idx])
+        else:
+            base = {}
+        base["name"] = f"方案{new_idx + 1}"
+        schemes.append(base)
+        # 创建图片目录，从当前方案复制图片
+        scheme_dir = os.path.join(APP_DIR, "images", f"scheme_{new_idx + 1}")
+        os.makedirs(scheme_dir, exist_ok=True)
+        current_dir = os.path.join(APP_DIR, "images", f"scheme_{current_idx + 1}")
+        if os.path.isdir(current_dir):
+            import shutil
+            for f in os.listdir(current_dir):
+                src = os.path.join(current_dir, f)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(scheme_dir, f))
+        self.refresh_scheme_menu()
+        self.switch_scheme(new_idx)
+
+    def delete_scheme(self):
+        """删除当前方案"""
+        schemes = self.config.get("schemes", [])
+        if len(schemes) <= 1:
+            self.log("至少保留一个方案")
+            return
+        idx = self.config.get("current_scheme", 0)
+        # 删除图片目录
+        scheme_dir = os.path.join(APP_DIR, "images", f"scheme_{idx + 1}")
+        if os.path.isdir(scheme_dir):
+            try:
+                import shutil
+                shutil.rmtree(scheme_dir)
+            except Exception as e:
+                self.log(f"删除方案图片目录失败: {e}")
+        schemes.pop(idx)
+        new_idx = min(idx, len(schemes) - 1)
+        self.config["current_scheme"] = new_idx
+        for k, v in schemes[new_idx].items():
+            self.config[k] = v
+        set_scheme_dir(f"scheme_{new_idx + 1}")
+        self.template_cache.clear()
+        self.scaled_template_cache.clear()
+        if hasattr(self, "template_gray_cache"):
+            self.template_gray_cache.clear()
+        if hasattr(self, "template_transparent_cache"):
+            self.template_transparent_cache.clear()
+        self.refresh_scheme_menu()
+        self.apply_scheme_to_ui(schemes[new_idx])
+        self.save_config()
+        self.log(f"已删除方案，切换到: {schemes[new_idx].get('name', f'方案{new_idx+1}')}")
+
+    def rename_scheme(self):
+        """重命名当前方案"""
+        import tkinter.simpledialog as sd
+        idx = self.config.get("current_scheme", 0)
+        schemes = self.config.get("schemes", [])
+        if idx < 0 or idx >= len(schemes):
+            return
+        old_name = schemes[idx].get("name", f"方案{idx+1}")
+        new_name = sd.askstring("重命名方案", "输入新名称:", initialvalue=old_name, parent=self)
+        if new_name and new_name.strip():
+            schemes[idx]["name"] = new_name.strip()
+            self.refresh_scheme_menu()
+            self.save_config()
+            self.log(f"方案已重命名为: {new_name.strip()}")
+
+    # ====== 方案管理结束 ======
 
     def is_debug_screenshots_enabled(self):
         if hasattr(self, "var_debug_screenshots"):
@@ -357,6 +715,50 @@ class FH_UltimateBot(
 
     def setup_ui(self):
         self.configure(fg_color="#0F141B")
+
+        # ====== 方案切换栏 ======
+        self.scheme_bar = ctk.CTkFrame(self, fg_color="#18202B", height=40, corner_radius=8)
+        self.scheme_bar.pack(fill="x", padx=16, pady=(8, 0))
+        self.scheme_bar.pack_propagate(False)
+        ctk.CTkLabel(
+            self.scheme_bar,
+            text="当前方案:",
+            font=ctk.CTkFont(weight="bold", size=14),
+            text_color="#F1C40F"
+        ).pack(side="left", padx=(12, 8))
+        self.scheme_menu = ctk.CTkOptionMenu(
+            self.scheme_bar,
+            values=["方案1"],
+            width=220,
+            height=28,
+            command=self.on_scheme_switch
+        )
+        self.scheme_menu.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            self.scheme_bar, text="新建", width=60, height=28,
+            command=self.new_scheme
+        ).pack(side="left", padx=4)
+        ctk.CTkButton(
+            self.scheme_bar, text="删除", width=60, height=28,
+            fg_color="#C0392B", hover_color="#A93226",
+            command=self.delete_scheme
+        ).pack(side="left", padx=4)
+        ctk.CTkButton(
+            self.scheme_bar, text="重命名", width=70, height=28,
+            command=self.rename_scheme
+        ).pack(side="left", padx=4)
+
+        # 版本标签（右侧）
+        self.version_label = ctk.CTkLabel(
+            self.scheme_bar,
+            text=f"v{CURRENT_VERSION}",
+            font=ctk.CTkFont(size=12),
+            text_color="#7F8C8D",
+            cursor="hand2"
+        )
+        self.version_label.pack(side="right", padx=(0, 16))
+        self.version_label.bind("<Button-1>", lambda e: self._open_releases_page())
+        self._update_blinking = False
 
         self.top_container = ctk.CTkFrame(self, fg_color="transparent")
         self.top_container.pack(fill="x", padx=16, pady=(16, 8))
@@ -588,7 +990,7 @@ class FH_UltimateBot(
             "开始",
             lambda: self.start_pipeline("sell"),
             "#C0392B",
-            self.config.get("sell_count", 10),
+            self.config.get("sell_count", 30),
         )
         self.next_frame4, self.entry_next4, self.chk4 = create_next_step(
             self.config_frame, self.var_chk4, self.config.get("next_4", 1)
@@ -806,6 +1208,9 @@ class FH_UltimateBot(
 
         # 日志缓冲（用于级别筛选）
         self._log_buffer = []
+
+        # 刷新方案下拉菜单
+        self.refresh_scheme_menu()
 
     def _show_log_menu(self, event):
         try:

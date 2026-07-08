@@ -45,9 +45,14 @@ patch_*.py
 cleanup.py
 PROGRESS.md
 flow_common.py
+update_debug.log
+game_window_tester.py
 
 # IDE / OS files
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 马自达源图（不应提交）
+马自达/

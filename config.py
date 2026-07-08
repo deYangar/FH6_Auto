@@ -53,7 +53,7 @@ LOG_FILE = os.path.join(APP_DIR, "bot_log.txt")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
 TEMPLATE_CACHE_FILE = os.path.join(CACHE_DIR, "template_cache.pkl")
 TEMPLATE_META_FILE = os.path.join(CACHE_DIR, "template_meta.json")
-CURRENT_VERSION = "1.2.0.0"
+CURRENT_VERSION = "1.2.1.0"
 
 def auto_extract_configs():
     # 只从 APP_DIR 下的历史文件名迁移，不再使用 config/ 子目录
@@ -90,8 +90,18 @@ def auto_extract_images(folder_name="images"):
     except Exception as e:
         print(f"[auto_extract_images] 释放 images 失败: {e}")
 
+_current_scheme_dir = None
+
+def set_scheme_dir(scheme_dir):
+    global _current_scheme_dir
+    _current_scheme_dir = scheme_dir
+
 def get_img_path(filename):
     basename = os.path.basename(filename)
+    if _current_scheme_dir:
+        scheme_path = os.path.join(APP_DIR, "images", _current_scheme_dir, basename)
+        if os.path.exists(scheme_path):
+            return scheme_path
     ext_path = os.path.join(APP_DIR, "images", basename)
     if os.path.exists(ext_path):
         return ext_path
