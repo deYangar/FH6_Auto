@@ -167,6 +167,7 @@ dist\FH6Auto.exe
 - `get_scales_to_try` fast_mode 从 8 个比例扩展到 ~22 个，覆盖 0.4~1.5 全范围
 - 去除 HSV 兜底选车逻辑，避免马自达多车型场景下选错车
 - `find_new_consumable_car_strict` 找不到目标车时返回 None，由翻页逻辑接管
+- 模板磁盘缓存改为 PNG 压缩 bytes 存储（`cv2.imencode`），缓存文件从 ~115MB 缩小到 ~30MB，识别结果完全无损
 
 **✨ 更新检测功能**
 - 启动时自动检查 GitHub Releases 是否有新版本
