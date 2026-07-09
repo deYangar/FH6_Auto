@@ -985,6 +985,9 @@ class VisionMixin:
             return None
         try:
             screen_bgr = self.capture_region(region)
+            if screen_bgr is None:
+                self.log(f"[GrayMatch] 截图失败: {template_path} | region={region}")
+                return None
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
             effective_threshold = self.get_calibrated_gray_threshold(threshold)
@@ -992,7 +995,11 @@ class VisionMixin:
             # 【新增】模板只读取一次,避免每个 scale 都重复加载
             tpl_gray_raw = self.load_template_gray(template_path)
             if tpl_gray_raw is None:
+                self.log(f"[GrayMatch] 模板加载失败: {template_path}")
                 return None
+
+            best_score = 0.0
+            best_scale = 0.0
 
             for scale in scales_to_try:
                 # 【改动】从原始模板复制,避免反复 resize 污染
@@ -1009,6 +1016,9 @@ class VisionMixin:
                 # ==============================
                 res = cv2.matchTemplate(screen_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                if max_val > best_score:
+                    best_score = max_val
+                    best_scale = scale
                 if max_val >= effective_threshold:
                     self.log(f"[GrayMatch] 命中: {template_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
                     return (
@@ -1023,6 +1033,9 @@ class VisionMixin:
                     tpl_inv = 255 - tpl_gray
                     res_inv = cv2.matchTemplate(screen_gray, tpl_inv, cv2.TM_CCOEFF_NORMED)
                     _, max_val_inv, _, max_loc_inv = cv2.minMaxLoc(res_inv)
+                    if max_val_inv > best_score:
+                        best_score = max_val_inv
+                        best_scale = scale
                     if max_val_inv >= effective_threshold:
                         self.log(f"[GrayMatch] 命中: {template_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
                         return (
@@ -1030,6 +1043,19 @@ class VisionMixin:
                             max_loc_inv[1] + h // 2 + (region[1] if region else 0),
                         )
 
+            # 所有 scale 均未命中，保存调试截图
+            self.log(f"[GrayMatch] 未命中: {template_path} | 最高分: {best_score:.3f} (阈值 {effective_threshold:.3f}) | 最佳缩放: {best_scale:.3f} | 截图均值: {screen_bgr.mean():.1f}")
+            try:
+                import time as _time
+                debug_dir = os.path.join(APP_DIR, "debug", "miss")
+                os.makedirs(debug_dir, exist_ok=True)
+                ts = _time.strftime("%Y%m%d_%H%M%S")
+                safe_name = template_path.replace("/", "_").replace("\\", "_")
+                debug_path = os.path.join(debug_dir, f"{ts}_{safe_name}_{best_score:.3f}.png")
+                cv2.imwrite(debug_path, screen_bgr)
+                self.log(f"[GrayMatch] 调试截图已保存: {debug_path}")
+            except Exception:
+                pass
             return None
         except Exception as e:
             self.log(f"find_image_gray 异常: {e}")
