@@ -115,16 +115,22 @@ python main.py
 本项目使用本地打包,不依赖 GitHub Actions:
 
 ```bat
-build.bat
+build.bat            :: 编译 Steam 版 (FH6Auto.exe)
+build.bat steam      :: 同上
+build.bat xbox       :: 编译 Xbox 版 (FH6Auto_xbox.exe)
+build.bat all        :: 编译两个版本
 ```
 
 输出文件:
 
 ```text
-dist\FH6Auto.exe
+dist\FH6Auto.exe        :: Steam 版,全后台输入
+dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 ```
 
 `assets/` 与 `images/` 会随 exe 一起打包。
+
+> Xbox 版编译时会临时替换 input_handler.py / race_logic.py 为 Xbox 版本,编译完成后自动恢复。
 
 ---
 
@@ -169,10 +175,13 @@ dist\FH6Auto.exe
 - `find_new_consumable_car_strict` 找不到目标车时返回 None，由翻页逻辑接管
 - 超级抽奖默认改为模式2（从设计与喷涂开始）
 
-**🎮 Xbox 分享码输入修复**
+**🎮 Xbox 分享码输入修复（独立版本）**
 - Xbox 文本框不支持后台 PostMessage 输入，改为前台 SendInput 真实键盘输入
 - 新增 `foreground_press` / `foreground_hotkey` / `foreground_type_text` 前台输入方法
 - 输入分享码时临时切换游戏到前台，完成后恢复后台模式
+- Xbox 修复代码在 `input_handler_xbox.py` + `race_logic_xbox.py`，编译产物为 `FH6Auto_xbox.exe`
+- 默认 `FH6Auto.exe` 为 Steam 版本，使用全后台输入，不含 Xbox 前台输入改动
+- ⚠️ 由于本人是 Steam 端游戏，Xbox 端的改动无法实机验证
 
 **✨ 更新检测功能**
 - 启动时自动检查 GitHub Releases 是否有新版本
