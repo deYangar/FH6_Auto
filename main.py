@@ -328,7 +328,7 @@ class FH_UltimateBot(
             "race_timeout": 300,
             "debug_screenshots": False,
             "focus_hook_enabled": False,
-            "cj_mode": 1,
+            "cj_mode": 2,
             "auto_close_game": False,
             "auto_shutdown": False,
             "diagnostic_mode": False,
@@ -357,7 +357,7 @@ class FH_UltimateBot(
                 "sell_count": self.config.get("sell_count", 30),
                 "skill_dirs": self.config.get("skill_dirs", ["right", "up", "up", "up", "left"]),
                 "share_code": self.config.get("share_code", "890169683"),
-                "cj_mode": self.config.get("cj_mode", 1),
+                "cj_mode": self.config.get("cj_mode", 2),
                 "chk_1": self.config.get("chk_1", True),
                 "chk_2": self.config.get("chk_2", True),
                 "chk_3": self.config.get("chk_3", True),
@@ -547,7 +547,7 @@ class FH_UltimateBot(
         if hasattr(self, "var_chk4"):
             self.var_chk4.set(scheme.get("chk_4", True))
         if hasattr(self, "opt_cj_mode"):
-            cj_mode = scheme.get("cj_mode", 1)
+            cj_mode = scheme.get("cj_mode", 2)
             if cj_mode == 2:
                 self.opt_cj_mode.set("模式2: 从设计与喷涂开始")
             else:
@@ -892,7 +892,7 @@ class FH_UltimateBot(
         ctk.CTkLabel(left_cj, text="3. 超级抽奖", font=ctk.CTkFont(weight="bold", size=18)).pack(pady=(2, 10))
 
         # ====== 超级抽奖模式选择 ======
-        saved_cj_mode = self.config.get("cj_mode", 1)
+        saved_cj_mode = self.config.get("cj_mode", 2)
         self.opt_cj_mode = ctk.CTkOptionMenu(
             left_cj,
             values=["模式1: 从我的车辆开始", "模式2: 从设计与喷涂开始"],
