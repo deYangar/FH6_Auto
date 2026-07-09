@@ -4,13 +4,56 @@ import json
 import threading
 import cv2
 import numpy as np
-from constants import DIK_CODES
 from config import APP_DIR
 from recognition_config import get_recognition_profile
 
 
 class RaceMixin:
     """循环跑图业务逻辑 + F3 测试找图"""
+
+    def input_share_code_foreground(self, code_text):
+        code_text = "".join(c for c in str(code_text) if c.isdigit())
+        if not code_text:
+            self.log("蓝图分享代码为空，无法搜索赛事。")
+            return False
+
+        self.log("分享码输入需要 Xbox 文本框焦点，临时切换到前台真实输入...")
+        if not self.focus_game_for_foreground_input(timeout=2.0):
+            return False
+
+        steps = [
+            ("backspace", 0.08, 0.8),
+            ("up", 0.08, 0.4),
+            ("enter", 0.08, 1.2),
+        ]
+        for key, delay, wait_after in steps:
+            if not self.foreground_press(key, delay=delay):
+                self.log(f"分享码输入前置按键失败: {key}")
+                return False
+            time.sleep(wait_after)
+
+        # 输入框可能保留旧内容，先尝试全选清空；不支持也不影响空输入框。
+        self.foreground_hotkey(["lctrl", "a"], delay=0.05)
+        self.foreground_press("delete", delay=0.05)
+        time.sleep(0.2)
+
+        if not self.foreground_type_text(code_text, delay=0.05):
+            self.log("分享码数字输入失败。")
+            return False
+
+        time.sleep(0.4)
+        for key, delay, wait_after in [
+            ("enter", 0.08, 0.8),
+            ("down", 0.08, 0.3),
+            ("enter", 0.08, 1.5),
+        ]:
+            if not self.foreground_press(key, delay=delay):
+                self.log(f"分享码提交按键失败: {key}")
+                return False
+            time.sleep(wait_after)
+
+        self.log(f"已通过前台真实输入提交分享码: {code_text}")
+        return True
 
     def _save_race_car_debug(self, stage, note="", extra=None):
         """保存循环跑图选车阶段的组合识别调试记录。"""
@@ -256,28 +299,9 @@ class RaceMixin:
         self.game_click(pos_yg)
         time.sleep(1.5)
 
-        self.hw_press("backspace")
-        time.sleep(0.8)
-        self.hw_press("up")
-        time.sleep(0.4)
-        self.hw_press("enter")
-        time.sleep(0.8)
-
         code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
-        for char in code_text:
-            if not self.is_running:
-                return False
-            if char in DIK_CODES:
-                self.hw_press(char, delay=0.08)
-                time.sleep(0.08)
-
-        time.sleep(0.4)
-        self.hw_press("enter")
-        time.sleep(0.8)
-        self.hw_press("down")
-        time.sleep(0.3)
-        self.hw_press("enter")
-        time.sleep(1.5)
+        if not self.input_share_code_foreground(code_text):
+            return False
 
         # 蓝图搜索结果检测：循环检查 racenotfound（蓝图失效）和 VEI（赛事信息）
         blueprint_result = None
