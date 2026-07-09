@@ -344,6 +344,18 @@ class RecoveryMixin:
             time.sleep(1.0)
 
         self.log("60 次尝试均未进入菜单,请检查游戏状态。")
+        # 保存最终截图供调试
+        try:
+            screen_bgr = self.capture_region(self.regions.get("全界面"))
+            if screen_bgr is not None:
+                debug_path = os.path.join(APP_DIR, "debug", "miss")
+                os.makedirs(debug_path, exist_ok=True)
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                path = os.path.join(debug_path, f"{ts}_enter_menu_failed.png")
+                cv2.imwrite(path, screen_bgr)
+                self.log(f"[Debug] 最终截图已保存: {path} | 截图均值: {screen_bgr.mean():.1f}")
+        except Exception:
+            pass
         return False
     def advanced_enter_menu(self):
         """

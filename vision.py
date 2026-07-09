@@ -13,6 +13,45 @@ import fh6_backend
 # 禁用 OpenCV 内部多线程，由 ThreadPoolExecutor 接管并行
 cv2.setNumThreads(1)
 from config import APP_DIR, INTERNAL_DIR, CACHE_DIR, TEMPLATE_CACHE_FILE, TEMPLATE_META_FILE, get_img_path
+
+# ==========================================
+# 调试工具
+# ==========================================
+DEBUG_MISS_DIR = os.path.join(APP_DIR, "debug", "miss")
+DEBUG_ACTION_DIR = os.path.join(APP_DIR, "debug", "actions")
+
+def _save_debug_screenshot(screen_bgr, tag, score=None, extra=None):
+    """保存调试截图到 debug/ 目录"""
+    try:
+        os.makedirs(DEBUG_MISS_DIR, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        safe_tag = tag.replace("/", "_").replace("\\", "_").replace(" ", "_")
+        score_str = f"_{score:.3f}" if score is not None else ""
+        fname = f"{ts}_{safe_tag}{score_str}.png"
+        path = os.path.join(DEBUG_MISS_DIR, fname)
+        cv2.imwrite(path, screen_bgr)
+        return path
+    except Exception:
+        return None
+
+def _save_action_screenshot(screen_bgr, action, pos=None, tag=None):
+    """保存操作截图到 debug/actions/ 目录，标记点击位置"""
+    try:
+        os.makedirs(DEBUG_ACTION_DIR, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        annotated = screen_bgr.copy()
+        if pos is not None:
+            px, py = int(pos[0]), int(pos[1])
+            cv2.drawCircle(annotated, (px, py), 20, (0, 0, 255), 2)
+            cv2.drawCircle(annotated, (px, py), 3, (0, 0, 255), -1)
+            cv2.putText(annotated, f"({px},{py})", (px + 25, py), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        safe_tag = (tag or action).replace("/", "_").replace("\\", "_").replace(" ", "_")
+        fname = f"{ts}_{action}_{safe_tag}.png"
+        path = os.path.join(DEBUG_ACTION_DIR, fname)
+        cv2.imwrite(path, annotated)
+        return path
+    except Exception:
+        return None
 from constants import MATCH_THRESHOLD
 from recognition_config import get_recognition_profile
 
@@ -248,7 +287,16 @@ class VisionMixin:
                 self.game_hwnd, region=region, window_offset=(wx, wy)
             )
             if screen_bgr is None:
+                self.log(f"[Capture] PrintWindow 失败 | hwnd={self.game_hwnd} | region={region}")
                 return None
+            # 黑屏/白屏检测
+            mean_val = screen_bgr.mean()
+            if mean_val < 5.0:
+                self.log(f"[Capture] ⚠️ 截图疑似黑屏 | 均值={mean_val:.1f} | hwnd={self.game_hwnd} | 尺寸={screen_bgr.shape[:2]}")
+                _save_debug_screenshot(screen_bgr, f"black_screen_{int(time.time())}")
+            elif mean_val > 250.0:
+                self.log(f"[Capture] ⚠️ 截图疑似白屏 | 均值={mean_val:.1f} | hwnd={self.game_hwnd} | 尺寸={screen_bgr.shape[:2]}")
+                _save_debug_screenshot(screen_bgr, f"white_screen_{int(time.time())}")
 
         # 对指定区域打黑块，避免重复识别同一个目标
         if mask_areas:
@@ -342,6 +390,8 @@ class VisionMixin:
     def find_image_in_screen(self, screen_bgr, template_path, region=None, threshold=0.75, fast_mode=True):
         try:
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
+            best_score = 0.0
+            best_scale = 0.0
 
             for scale in scales_to_try:
                 tpl_c, actual_path = self.get_scaled_template(template_path, scale)
@@ -356,6 +406,9 @@ class VisionMixin:
 
                 res = cv2.matchTemplate(screen_bgr, tpl_c, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                if max_val > best_score:
+                    best_score = max_val
+                    best_scale = scale
 
                 if max_val >= threshold:
                     pos = (
@@ -363,10 +416,11 @@ class VisionMixin:
                         max_loc[1] + h // 2 + (region[1] if region else 0),
                     )
                     self.last_positions[template_path] = pos
-                    # 【新增】:在基础图像查找中增加详细日志返回
                     self.log(f"[ImageMatch] 命中: {template_path} | 得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
                     return pos
 
+            self.log(f"[ImageMatch] 未命中: {template_path} | 最高分: {best_score:.3f} (阈值 {threshold}) | 最佳缩放: {best_scale:.3f} | 截图均值: {screen_bgr.mean():.1f} | 区域: {region}")
+            _save_debug_screenshot(screen_bgr, template_path, score=best_score)
             return None
 
         except Exception as e:
@@ -491,16 +545,22 @@ class VisionMixin:
             return None
         try:
             screen_bgr = self.capture_region(region)
+            if screen_bgr is None:
+                self.log(f"[AlphaMatch] 截图失败: {template_path} | region={region}")
+                return None
             tpl_bgra = self.load_template_transparent(template_path)
 
             if tpl_bgra is None:
+                self.log(f"[AlphaMatch] 模板加载失败: {template_path}")
+                _save_debug_screenshot(screen_bgr, f"no_template_{template_path}")
                 return None
-            # 如果图片没有透明通道(不是4通道),降级为普通匹配
             if tpl_bgra.shape[2] != 4:
+                self.log(f"[AlphaMatch] 降级为普通匹配: {template_path} (无 Alpha 通道)")
                 return self.find_image_in_screen(screen_bgr, template_path, region, threshold, fast_mode)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
+            best_score = 0.0
+            best_scale = 0.0
             for scale in scales_to_try:
-                # 对带有透明通道的原图进行缩放
                 if scale == 1.0:
                     tpl_scaled = tpl_bgra.copy()
                 else:
@@ -508,19 +568,21 @@ class VisionMixin:
                 h, w = tpl_scaled.shape[:2]
                 if h < 5 or w < 5 or h > screen_bgr.shape[0] or w > screen_bgr.shape[1]:
                     continue
-                # 分离出 BGR 色彩层 和 Alpha 透明遮罩层
                 tpl_bgr = tpl_scaled[:, :, :3]
                 alpha_mask = tpl_scaled[:, :, 3]
-                                # 核心魔法:带 mask 的匹配!透明区域不参与算分!
                 res = cv2.matchTemplate(screen_bgr, tpl_bgr, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                if max_val > best_score:
+                    best_score = max_val
+                    best_scale = scale
                 if max_val >= threshold:
-                    # 【新增】:带透明通道的匹配日志
                     self.log(f"[AlphaMatch] 命中(无视背景): {template_path} | 得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
                     return (
                         max_loc[0] + w // 2 + (region[0] if region else 0),
                         max_loc[1] + h // 2 + (region[1] if region else 0),
                     )
+            self.log(f"[AlphaMatch] 未命中: {template_path} | 最高分: {best_score:.3f} (阈值 {threshold}) | 最佳缩放: {best_scale:.3f} | 截图均值: {screen_bgr.mean():.1f} | 区域: {region}")
+            _save_debug_screenshot(screen_bgr, template_path, score=best_score)
             return None
         except Exception as e:
             self.log(f"find_image_transparent 异常: {e}")
@@ -974,17 +1036,23 @@ class VisionMixin:
             return None
         try:
             screen_bgr = self.capture_region(region)
+            if screen_bgr is None:
+                self.log(f"[GrayMatch] 截图失败: {template_path} | region={region}")
+                return None
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
             effective_threshold = self.get_calibrated_gray_threshold(threshold)
 
-            # 【新增】模板只读取一次,避免每个 scale 都重复加载
             tpl_gray_raw = self.load_template_gray(template_path)
             if tpl_gray_raw is None:
+                self.log(f"[GrayMatch] 模板加载失败: {template_path}")
+                _save_debug_screenshot(screen_bgr, f"no_template_{template_path}")
                 return None
 
+            best_score = 0.0
+            best_scale = 0.0
+
             for scale in scales_to_try:
-                # 【改动】从原始模板复制,避免反复 resize 污染
                 tpl_gray = tpl_gray_raw
                 if scale != 1.0:
                     tpl_gray = cv2.resize(tpl_gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
@@ -993,11 +1061,11 @@ class VisionMixin:
                 if h < 5 or w < 5 or h > screen_gray.shape[0] or w > screen_gray.shape[1]:
                     continue
 
-                # ==============================
-                # 原图匹配
-                # ==============================
                 res = cv2.matchTemplate(screen_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                if max_val > best_score:
+                    best_score = max_val
+                    best_scale = scale
                 if max_val >= effective_threshold:
                     self.log(f"[GrayMatch] 命中: {template_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
                     return (
@@ -1005,13 +1073,13 @@ class VisionMixin:
                         max_loc[1] + h // 2 + (region[1] if region else 0),
                     )
 
-                # ==============================
-                # 【新增】翻转模式:反相模板匹配
-                # ==============================
                 if invert_mode:
                     tpl_inv = 255 - tpl_gray
                     res_inv = cv2.matchTemplate(screen_gray, tpl_inv, cv2.TM_CCOEFF_NORMED)
                     _, max_val_inv, _, max_loc_inv = cv2.minMaxLoc(res_inv)
+                    if max_val_inv > best_score:
+                        best_score = max_val_inv
+                        best_scale = scale
                     if max_val_inv >= effective_threshold:
                         self.log(f"[GrayMatch] 命中: {template_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
                         return (
@@ -1019,6 +1087,10 @@ class VisionMixin:
                             max_loc_inv[1] + h // 2 + (region[1] if region else 0),
                         )
 
+            self.log(f"[GrayMatch] 未命中: {template_path} | 最高分: {best_score:.3f} (阈值 {effective_threshold:.3f}) | 最佳缩放: {best_scale:.3f} | 截图均值: {screen_bgr.mean():.1f} | 区域: {region}")
+            debug_path = _save_debug_screenshot(screen_bgr, template_path, score=best_score)
+            if debug_path:
+                self.log(f"[GrayMatch] 调试截图: {debug_path}")
             return None
         except Exception as e:
             self.log(f"find_image_gray 异常: {e}")
@@ -1384,6 +1456,8 @@ class VisionMixin:
                         all_candidates.append((int(x), int(y), w_m, h_m, score, scale))
 
             if not all_candidates:
+                self.log(f"[ComboMatch] 未命中: {main_path}+{sub_path} | 无候选 (主图阈值 {main_threshold}) | 截图均值: {screen_bgr.mean():.1f} | 区域: {region}")
+                _save_debug_screenshot(screen_bgr, f"combo_{main_path}+{sub_path}")
                 return None
 
             # IoU NMS 去重（跨所有缩放比）
@@ -1499,6 +1573,9 @@ class VisionMixin:
 
             if best_result:
                 self.log(f"[ComboMatch] 最终选中: final_score={best_final_score:.3f}")
+            else:
+                self.log(f"[ComboMatch] 未命中: {main_path}+{sub_path} | 有候选但未过终审 (终审阈值 {final_threshold}) | 候选数: {len(all_candidates)} | 区域: {region}")
+                _save_debug_screenshot(screen_bgr, f"combo_{main_path}+{sub_path}")
             return best_result
         except Exception as e:
             self.log(f"find_combo 异常: {e}")
