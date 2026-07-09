@@ -167,6 +167,12 @@ dist\FH6Auto.exe
 - `get_scales_to_try` fast_mode 从 8 个比例扩展到 ~22 个，覆盖 0.4~1.5 全范围
 - 去除 HSV 兜底选车逻辑，避免马自达多车型场景下选错车
 - `find_new_consumable_car_strict` 找不到目标车时返回 None，由翻页逻辑接管
+- 超级抽奖默认改为模式2（从设计与喷涂开始）
+
+**🎮 Xbox 分享码输入修复**
+- Xbox 文本框不支持后台 PostMessage 输入，改为前台 SendInput 真实键盘输入
+- 新增 `foreground_press` / `foreground_hotkey` / `foreground_type_text` 前台输入方法
+- 输入分享码时临时切换游戏到前台，完成后恢复后台模式
 
 **✨ 更新检测功能**
 - 启动时自动检查 GitHub Releases 是否有新版本
