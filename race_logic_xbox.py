@@ -32,9 +32,9 @@ class RaceMixin:
                 return False
             time.sleep(wait_after)
 
-        # 输入框可能保留旧内容，先尝试全选清空；不支持也不影响空输入框。
-        self.foreground_hotkey(["lctrl", "a"], delay=0.05)
-        self.foreground_press("delete", delay=0.05)
+        # 用 backspace 清空输入框可能残留的内容（Ctrl+A 在 Xbox 文本框会产生控制字符）
+        for _ in range(10):
+            self.foreground_press("backspace", delay=0.03)
         time.sleep(0.2)
 
         if not self.foreground_type_text(code_text, delay=0.05):
