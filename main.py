@@ -645,6 +645,81 @@ class FH_UltimateBot(
                 pass
         return bool(self.config.get("debug_screenshots", False))
 
+    def is_diagnostic_mode_enabled(self):
+        if hasattr(self, "var_diagnostic_mode"):
+            try:
+                return bool(self.var_diagnostic_mode.get())
+            except Exception:
+                pass
+        return bool(self.config.get("diagnostic_mode", False))
+
+    def capture_diagnostic_snapshot(self, name, *, region=None, image_bgr=None,
+                                    reason=None, level="WARN", threshold=None,
+                                    score=None, meta=None):
+        """结构化诊断截图：保存 PNG + 写入 JSONL metadata。
+
+        仅在调试截图或诊断模式开启时写入，否则直接返回。
+        """
+        if not self.is_debug_screenshots_enabled() and not self.is_diagnostic_mode_enabled():
+            return None
+
+        import json as _json
+        try:
+            if image_bgr is None:
+                image_bgr = self.capture_region(region)
+            if image_bgr is None:
+                return None
+
+            debug_miss_dir = os.path.join(APP_DIR, "debug", "miss")
+            os.makedirs(debug_miss_dir, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            ms = int(time.time() * 1000) % 1000
+            safe_name = str(name).replace("/", "_").replace("\\", "_").replace(" ", "_")
+            score_str = f"_{score:.3f}" if score is not None else ""
+            fname = f"{ts}_{safe_name}{score_str}.png"
+            fpath = os.path.join(debug_miss_dir, fname)
+            cv2.imwrite(fpath, image_bgr)
+
+            # 写 JSONL 条目
+            entry = {
+                "timestamp": ts,
+                "millis": ms,
+                "name": name,
+                "reason": reason,
+                "level": level,
+                "threshold": threshold,
+                "score": round(score, 4) if score is not None else None,
+                "region": list(region) if region else None,
+                "screenshot": fname,
+                "screen_mean": round(float(image_bgr.mean()), 2),
+            }
+            if meta and isinstance(meta, dict):
+                entry["meta"] = meta
+
+            jsonl_path = os.path.join(APP_DIR, "debug", "diagnostic.jsonl")
+            os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)
+            with open(jsonl_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+
+            # 同时记录到诊断会话 trace（如果开启）
+            trace = getattr(self, "diagnostic_trace", None)
+            if trace:
+                trace["capture_count"] += 1
+                trace["captures"].append({
+                    "ts": ts,
+                    "kind": "capture",
+                    "name": name,
+                    "level": str(level or "WARN").upper(),
+                    "reason": reason,
+                    "file": fpath,
+                    "region": list(region) if region else None,
+                    "meta": meta or {},
+                })
+
+            return fpath
+        except Exception:
+            return None
+
     def is_focus_hook_enabled(self):
         return bool(self.config.get("focus_hook_enabled", False))
 
@@ -1465,42 +1540,6 @@ class FH_UltimateBot(
             return
         trace["log_count"] += 1
         trace["log_levels"][event["level"]] = trace["log_levels"].get(event["level"], 0) + 1
-
-    def capture_diagnostic_snapshot(self, name, *, region=None, image_bgr=None, reason=None, level="WARN", meta=None, dedupe_key=None):
-        """保存诊断截图（仅诊断模式开启时）。"""
-        trace = getattr(self, "diagnostic_trace", None)
-        if not trace:
-            return None
-        capture_key = dedupe_key or name
-        if capture_key in trace["capture_keys"]:
-            return None
-        try:
-            frame = image_bgr if image_bgr is not None else self.capture_region(region)
-        except Exception:
-            return None
-        if frame is None:
-            return None
-        safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(name or "capture"))
-        capture_index = trace["capture_count"] + 1
-        filename = f"{capture_index:03d}_{safe_name}.png"
-        file_path = os.path.join(trace["captures_dir"], filename)
-        try:
-            cv2.imwrite(file_path, frame)
-        except Exception:
-            return None
-        trace["capture_count"] = capture_index
-        trace["capture_keys"].add(capture_key)
-        trace["captures"].append({
-            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "kind": "capture",
-            "name": name,
-            "level": str(level or "WARN").upper(),
-            "reason": reason,
-            "file": file_path,
-            "region": region,
-            "meta": meta or {},
-        })
-        return file_path
 
     def start_diagnostic_trace_session(self, session_name):
         """启动诊断会话，创建报告目录和 JSONL 文件。"""

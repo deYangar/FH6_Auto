@@ -73,7 +73,7 @@ if exist build rmdir /s /q build
 if exist "%EXE_NAME%.spec" del /f /q "%EXE_NAME%.spec"
 
 echo [INFO] Building with PyInstaller...
-python -m PyInstaller -n "%EXE_NAME%" -F -w --uac-admin "%MAIN_FILE%" --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" --noconfirm
+python -m PyInstaller -n "%EXE_NAME%" -F -w --uac-admin --noupx "%MAIN_FILE%" --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" --noconfirm
 
 if errorlevel 1 (
     echo [ERROR] Build failed!

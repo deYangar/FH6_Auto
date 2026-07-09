@@ -293,10 +293,10 @@ class VisionMixin:
             mean_val = screen_bgr.mean()
             if mean_val < 5.0:
                 self.log(f"[Capture] ⚠️ 截图疑似黑屏 | 均值={mean_val:.1f} | hwnd={self.game_hwnd} | 尺寸={screen_bgr.shape[:2]}")
-                _save_debug_screenshot(screen_bgr, f"black_screen_{int(time.time())}")
+                self.capture_diagnostic_snapshot("black_screen", image_bgr=screen_bgr, reason="截图均值<5.0", level="ERROR", meta={"mean": round(float(mean_val), 2), "hwnd": self.game_hwnd})
             elif mean_val > 250.0:
                 self.log(f"[Capture] ⚠️ 截图疑似白屏 | 均值={mean_val:.1f} | hwnd={self.game_hwnd} | 尺寸={screen_bgr.shape[:2]}")
-                _save_debug_screenshot(screen_bgr, f"white_screen_{int(time.time())}")
+                self.capture_diagnostic_snapshot("white_screen", image_bgr=screen_bgr, reason="截图均值>250.0", level="ERROR", meta={"mean": round(float(mean_val), 2), "hwnd": self.game_hwnd})
 
         # 对指定区域打黑块，避免重复识别同一个目标
         if mask_areas:
@@ -420,7 +420,7 @@ class VisionMixin:
                     return pos
 
             self.log(f"[ImageMatch] 未命中: {template_path} | 最高分: {best_score:.3f} (阈值 {threshold}) | 最佳缩放: {best_scale:.3f} | 截图均值: {screen_bgr.mean():.1f} | 区域: {region}")
-            _save_debug_screenshot(screen_bgr, template_path, score=best_score)
+            self.capture_diagnostic_snapshot(template_path, region=region, image_bgr=screen_bgr, reason="未命中", level="WARN", threshold=threshold, score=best_score, meta={"best_scale": round(best_scale, 3)})
             return None
 
         except Exception as e:
@@ -552,7 +552,7 @@ class VisionMixin:
 
             if tpl_bgra is None:
                 self.log(f"[AlphaMatch] 模板加载失败: {template_path}")
-                _save_debug_screenshot(screen_bgr, f"no_template_{template_path}")
+                self.capture_diagnostic_snapshot(f"no_template_{template_path}", region=region, image_bgr=screen_bgr, reason="模板加载失败", level="ERROR")
                 return None
             if tpl_bgra.shape[2] != 4:
                 self.log(f"[AlphaMatch] 降级为普通匹配: {template_path} (无 Alpha 通道)")
@@ -582,7 +582,7 @@ class VisionMixin:
                         max_loc[1] + h // 2 + (region[1] if region else 0),
                     )
             self.log(f"[AlphaMatch] 未命中: {template_path} | 最高分: {best_score:.3f} (阈值 {threshold}) | 最佳缩放: {best_scale:.3f} | 截图均值: {screen_bgr.mean():.1f} | 区域: {region}")
-            _save_debug_screenshot(screen_bgr, template_path, score=best_score)
+            self.capture_diagnostic_snapshot(template_path, region=region, image_bgr=screen_bgr, reason="未命中", level="WARN", threshold=threshold, score=best_score, meta={"best_scale": round(best_scale, 3)})
             return None
         except Exception as e:
             self.log(f"find_image_transparent 异常: {e}")
@@ -1046,7 +1046,7 @@ class VisionMixin:
             tpl_gray_raw = self.load_template_gray(template_path)
             if tpl_gray_raw is None:
                 self.log(f"[GrayMatch] 模板加载失败: {template_path}")
-                _save_debug_screenshot(screen_bgr, f"no_template_{template_path}")
+                self.capture_diagnostic_snapshot(f"no_template_{template_path}", region=region, image_bgr=screen_bgr, reason="模板加载失败", level="ERROR")
                 return None
 
             best_score = 0.0
@@ -1088,7 +1088,7 @@ class VisionMixin:
                         )
 
             self.log(f"[GrayMatch] 未命中: {template_path} | 最高分: {best_score:.3f} (阈值 {effective_threshold:.3f}) | 最佳缩放: {best_scale:.3f} | 截图均值: {screen_bgr.mean():.1f} | 区域: {region}")
-            debug_path = _save_debug_screenshot(screen_bgr, template_path, score=best_score)
+            debug_path = self.capture_diagnostic_snapshot(template_path, region=region, image_bgr=screen_bgr, reason="未命中", level="WARN", threshold=effective_threshold, score=best_score, meta={"best_scale": round(best_scale, 3)})
             if debug_path:
                 self.log(f"[GrayMatch] 调试截图: {debug_path}")
             return None
@@ -1457,7 +1457,7 @@ class VisionMixin:
 
             if not all_candidates:
                 self.log(f"[ComboMatch] 未命中: {main_path}+{sub_path} | 无候选 (主图阈值 {main_threshold}) | 截图均值: {screen_bgr.mean():.1f} | 区域: {region}")
-                _save_debug_screenshot(screen_bgr, f"combo_{main_path}+{sub_path}")
+                self.capture_diagnostic_snapshot(f"combo_{main_path}+{sub_path}", region=region, image_bgr=screen_bgr, reason="无候选", level="WARN", threshold=main_threshold, meta={"sub_path": sub_path})
                 return None
 
             # IoU NMS 去重（跨所有缩放比）
@@ -1575,7 +1575,7 @@ class VisionMixin:
                 self.log(f"[ComboMatch] 最终选中: final_score={best_final_score:.3f}")
             else:
                 self.log(f"[ComboMatch] 未命中: {main_path}+{sub_path} | 有候选但未过终审 (终审阈值 {final_threshold}) | 候选数: {len(all_candidates)} | 区域: {region}")
-                _save_debug_screenshot(screen_bgr, f"combo_{main_path}+{sub_path}")
+                self.capture_diagnostic_snapshot(f"combo_{main_path}+{sub_path}", region=region, image_bgr=screen_bgr, reason="有候选但未过终审", level="WARN", threshold=final_threshold, meta={"candidate_count": len(all_candidates), "sub_path": sub_path})
             return best_result
         except Exception as e:
             self.log(f"find_combo 异常: {e}")
