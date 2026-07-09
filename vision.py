@@ -181,7 +181,10 @@ class VisionMixin:
                     else:
                         scaled = cv2.resize(tpl, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
-                    cache_data[rel_path][str(round(scale, 3))] = scaled
+                    # PNG 压缩存储，体积缩小 ~4x
+                    ok, buf = cv2.imencode('.png', scaled)
+                    if ok:
+                        cache_data[rel_path][str(round(scale, 3))] = buf.tobytes()
                 except Exception:
                     continue
 
@@ -319,10 +322,18 @@ class VisionMixin:
 
         scale_key = str(round(scale, 3))
         if rel_key in self.file_template_cache:
-            tpl = self.file_template_cache[rel_key].get(scale_key)
-            if tpl is not None:
-                self.scaled_template_cache[mem_key] = tpl
-                return tpl, actual_path
+            raw = self.file_template_cache[rel_key].get(scale_key)
+            if raw is not None:
+                # PNG bytes -> ndarray
+                if isinstance(raw, (bytes, bytearray)):
+                    buf = np.frombuffer(raw, dtype=np.uint8)
+                    tpl = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                else:
+                    # 向后兼容：旧缓存直接存了 ndarray
+                    tpl = raw
+                if tpl is not None:
+                    self.scaled_template_cache[mem_key] = tpl
+                    return tpl, actual_path
 
         template_orig, actual_path = self.load_template(template_path)
         if template_orig is None:
