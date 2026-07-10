@@ -82,6 +82,7 @@
   - `debug_strict_car/`
   - `debug_car_select/`
   - `debug_upgrade_flow/`
+  - `debug/miss/`（灰度匹配未命中截图）
 
 ### Focus Hook 开关
 - 界面提供"Hook游戏窗口使其始终为焦点"勾选框，状态保存到 `config.json` 的 `focus_hook_enabled` 字段。
@@ -169,7 +170,7 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 - 同样新增品牌重试机制：10 页未找到 -> 重新进入选品牌 -> 再找 10 页 -> 仍未找到才退出
 
 **📦 合并 dev 分支**
-- PNG 压缩模板缓存：pickle + cv2.imencode('.png') 存储，体积缩小 ~4x
+- PNG 压缩模板缓存：pickle + cv2.imencode('.png') 存储，大幅减小缓存体积
 - `find_image_gray` 未命中时保存调试截图
 - 修复合并冲突导致 `load_template` 方法丢失的问题
 
