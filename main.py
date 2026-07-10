@@ -393,8 +393,8 @@ class FH_UltimateBot(
         try:
             with open(ext_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"配置文件写入失败: {e}", level="ERROR")
 
     def save_config(self):
         try:
@@ -412,8 +412,8 @@ class FH_UltimateBot(
                 self.config["next_4"] = int(self.entry_next4.get())
             if hasattr(self, "entry_sc"):
                 self.config["sell_count"] = int(self.entry_sc.get())
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"保存配置时数值解析失败: {e}", level="WARN")
 
         self.config["chk_1"] = self.var_chk1.get()
         self.config["chk_2"] = self.var_chk2.get()
@@ -1587,8 +1587,8 @@ class FH_UltimateBot(
         try:
             with open(os.path.join(trace["report_dir"], "summary.json"), "w", encoding="utf-8") as f:
                 json.dump(summary, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"[Diagnostic] 诊断摘要写入失败: {e}", level="ERROR")
         # 生成可读报告
         try:
             lines = [

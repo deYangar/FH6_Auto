@@ -35,8 +35,8 @@ class AntiCheatMixin:
                 continue
             try:
                 self._check_print_window_health()
-            except Exception:
-                pass
+            except Exception as e:
+                self.log(f"[反检测] PrintWindow 健康检查异常: {e}", level="WARN")
 
     def _check_print_window_health(self):
         """检测 PrintWindow 是否还能正常截图"""

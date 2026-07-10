@@ -203,8 +203,8 @@ class RecoveryMixin:
                                     self.log(f"[轮廓黑科技] 无视背景命中!得分: {max_val:.2f} 缩放: {scale:.2f}")
                                     pos_h6 = (max_loc[0] + w//2 + self.regions["全界面"][0], max_loc[1] + h//2 + self.regions["全界面"][1])
                                     break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self.log(f"[轮廓黑科技] 模板匹配异常: {e}", level="DEBUG")
 
                 if pos_h6:
                     self.log("✅ 成功识别到 画面1 (horizon6.png),按下【回车键】...")
@@ -358,8 +358,8 @@ class RecoveryMixin:
                 )
                 if debug_path:
                     self.log(f"[Debug] 最终截图已保存: {debug_path} | 截图均值: {screen_bgr.mean():.1f}")
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"[Recovery] enter_menu 最终截图保存异常: {e}", level="DEBUG")
         return False
     def advanced_enter_menu(self):
         """

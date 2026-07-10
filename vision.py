@@ -118,10 +118,9 @@ class VisionMixin:
             cv2.imwrite(os.path.join(out_dir, "screen_annotated.png"), annotated)
             with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
                 json.dump(meta or {}, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
-    def load_template(self, template_path):
+        except Exception as e:
+            if hasattr(self, 'log'):
+                self.log(f"[Debug] 严格识别调试截图保存失败: {e}", level="DEBUG")
         actual_path = get_img_path(template_path)
         cache_key = actual_path
 
@@ -132,6 +131,19 @@ class VisionMixin:
         if tpl is not None:
             self.template_cache[cache_key] = tpl
         return tpl, actual_path
+    def load_template(self, template_path):
+        """加载彩色模板图（BGR），带内存缓存，返回 (template, actual_path)。"""
+        actual_path = get_img_path(template_path)
+        cache_key = actual_path
+
+        if cache_key in self.template_cache:
+            return self.template_cache[cache_key], actual_path
+
+        tpl = cv2.imread(actual_path, cv2.IMREAD_COLOR)
+        if tpl is not None:
+            self.template_cache[cache_key] = tpl
+        return tpl, actual_path
+
     def load_template_gray(self, template_path):
         actual_path = get_img_path(template_path)
         cache_key = ("gray", actual_path)
@@ -284,8 +296,9 @@ class VisionMixin:
             try:
                 pt = win32gui.ClientToScreen(self.game_hwnd, (0, 0))
                 wx, wy = pt[0], pt[1]
-            except Exception:
-                pass
+            except Exception as e:
+                if hasattr(self, 'log'):
+                    self.log(f"ClientToScreen 获取窗口坐标失败: {e}", level="WARN")
             screen_bgr = fh6_backend.capture_window(
                 self.game_hwnd, region=region, window_offset=(wx, wy)
             )

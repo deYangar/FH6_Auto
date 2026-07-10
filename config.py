@@ -53,7 +53,7 @@ LOG_FILE = os.path.join(APP_DIR, "bot_log.txt")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
 TEMPLATE_CACHE_FILE = os.path.join(CACHE_DIR, "template_cache.pkl")
 TEMPLATE_META_FILE = os.path.join(CACHE_DIR, "template_meta.json")
-CURRENT_VERSION = "1.2.1.0"
+CURRENT_VERSION = "1.2.2.0"
 
 def auto_extract_configs():
     # 只从 APP_DIR 下的历史文件名迁移，不再使用 config/ 子目录
@@ -68,8 +68,8 @@ def auto_extract_configs():
                     shutil.move(old_path, USER_CONFIG_FILE)
                 else:
                     os.remove(old_path)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[config] 迁移旧配置文件失败: {e}")
 
 def auto_extract_images(folder_name="images"):
     internal_dir = os.path.join(INTERNAL_DIR, folder_name)

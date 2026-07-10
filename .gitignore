@@ -56,3 +56,5 @@ Thumbs.db
 
 # 马自达源图（不应提交）
 马自达/
+
+test_png_cache.py

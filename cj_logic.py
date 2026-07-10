@@ -353,139 +353,149 @@ class CJMixin:
                 else:
                     self.log("未找到选择车辆(choosecar.png)")
                     return False
-            # ===============================================
-            self.hw_press("backspace")
-            time.sleep(1.0)
-
-            brand_pos = None
-            for _ in range(30):
-                if not self.is_running:
-                    return False
-
-                brand_pos = self.wait_for_any_image_gray(
-                    ["CCbrand.png"],
-                    region=self.regions["全界面"],
-                    threshold=0.75,
-                    timeout=0.8,
-                    interval=0.2,
-                    fast_mode=True
-                )
-                if brand_pos:
-                    break
-
-                self.hw_press("up")
-                time.sleep(0.25)
-
-            if not brand_pos:
-                self.log("选品牌失败")
-                return False
-
-            self.game_click(brand_pos)
-            time.sleep(0.8)
-            # 后台点击品牌有时只把焦点停在品牌项上，未真正进入车辆列表。
-            # 如果 CCbrand 仍可见，说明还在制造商列表，补 Enter 确认进入。
-            for retry in range(3):
-                if not self.is_running:
-                    return False
-                still_brand = self.find_image_gray(
-                    "CCbrand.png",
-                    region=self.regions["全界面"],
-                    threshold=0.75,
-                    fast_mode=True
-                )
-                if not still_brand:
-                    break
-                self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
-                self.hw_press("enter")
+            # ====== 选品牌 + 翻页找车（最多重试 1 次）======
+            while True:
+                self.hw_press("backspace")
                 time.sleep(1.0)
-            jump_pages = max(0, self.memory_car_page - 1)
 
-            if jump_pages > 0:
-                self.log(f"智能记忆触发:快速跳过前 {jump_pages} 页...")
-                for _ in range(jump_pages):
-                    if not self.is_running: return False
+                brand_pos = None
+                for _ in range(30):
+                    if not self.is_running:
+                        return False
+
+                    brand_pos = self.wait_for_any_image_gray(
+                        ["CCbrand.png"],
+                        region=self.regions["全界面"],
+                        threshold=0.75,
+                        timeout=0.8,
+                        interval=0.2,
+                        fast_mode=True
+                    )
+                    if brand_pos:
+                        break
+
+                    self.hw_press("up")
+                    time.sleep(0.25)
+
+                if not brand_pos:
+                    self.log("选品牌失败")
+                    return False
+
+                self.game_click(brand_pos)
+                time.sleep(0.8)
+                # 后台点击品牌有时只把焦点停在品牌项上，未真正进入车辆列表。
+                # 如果 CCbrand 仍可见，说明还在制造商列表，补 Enter 确认进入。
+                for retry in range(3):
+                    if not self.is_running:
+                        return False
+                    still_brand = self.find_image_gray(
+                        "CCbrand.png",
+                        region=self.regions["全界面"],
+                        threshold=0.75,
+                        fast_mode=True
+                    )
+                    if not still_brand:
+                        break
+                    self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
+                    self.hw_press("enter")
+                    time.sleep(1.0)
+                jump_pages = max(0, self.memory_car_page - 1)
+
+                if jump_pages > 0:
+                    self.log(f"智能记忆触发:快速跳过前 {jump_pages} 页...")
+                    for _ in range(jump_pages):
+                        if not self.is_running: return False
+                        for _ in range(4):
+                            self.hw_press("right", delay=0.10)
+                            time.sleep(0.22)
+                        time.sleep(0.45) # 给翻页动画更充足缓冲，避免列表还在滑动时识别/点击
+                pos_target = None
+                found_car = False
+                current_page = jump_pages # 记录当前所在的真实页码
+
+                # 最多看 3 页（第 0/1/2 页），每页的顺序：搜索 → P切换重搜 → 不行就翻下一页
+                max_pages = 5
+                for page_idx in range(max_pages):
+                    if not self.is_running:
+                        return False
+                    pos_target = self.wait_for_new_consumable_car_strict(timeout=3.0, interval=0.2)
+
+                    if pos_target:
+                        self.detail_state_confirmed = True
+                        self._save_car_select_debug(
+                            "before_target_sendmessage_click",
+                            pos_target=pos_target,
+                            note="识别到目标车；车库卡片直接使用 SendMessage 同步强点击选中",
+                            extra={"current_page": current_page, "clicks": 1, "hold": 0.22, "gap": 0.18, "use_send": True, "single_point": True, "dblclk": False}
+                        )
+                        click_points = getattr(self, "last_strict_car_click_points", [pos_target])
+                        click_points_to_try = [(int(p[0]), int(p[1])) for p in click_points[:1]]
+                        self.log(f"SendMessage 主点强点车卡: {click_points_to_try}")
+                        for idx, click_point in enumerate(click_points_to_try, start=1):
+                            if not self.is_running:
+                                return False
+                            self.log(
+                                f"[CarSelect] SendMessage 强点候选点 {idx}/{len(click_points_to_try)} "
+                                f"坐标={click_point} clicks=1 hold=0.22 gap=0.18"
+                            )
+                            self._save_car_select_debug(
+                                f"before_send_point_{idx}",
+                                pos_target=click_point,
+                                note=f"准备 SendMessage 强点候选点 {idx}",
+                                extra={"current_page": current_page, "point_index": idx, "all_points": [list(p) for p in click_points_to_try]}
+                            )
+                            self.game_click(click_point, clicks=1, hold=0.22, gap=0.18, use_send=True)
+                            time.sleep(0.35)
+                            self._save_car_select_debug(
+                                f"after_send_point_{idx}",
+                                pos_target=click_point,
+                                note=f"已 SendMessage 强点候选点 {idx}",
+                                extra={"current_page": current_page, "point_index": idx, "all_points": [list(p) for p in click_points_to_try]}
+                            )
+                        time.sleep(0.5)
+                        if not self._verify_target_point_b600(pos_target, threshold=0.72):
+                            self.log("当前候选不满足目标等级标签硬条件，判定本屏/本批无可安全处理目标，结束超抽步骤。")
+                            return True
+                        self._save_car_select_debug(
+                            "before_enter_select",
+                            pos_target=pos_target,
+                            note="主点强点结束，等级标签二次校验通过，准备按 Enter 选择当前焦点车卡",
+                            extra={"current_page": current_page, "all_points": [list(p) for p in click_points_to_try]}
+                        )
+                        # 强点会 hover/选中车卡，但当前界面仍需要 Enter 选择，才会进入“上车”菜单。
+                        self.hw_press("enter")
+                        time.sleep(1.0)
+                        self._save_car_select_debug(
+                            "after_enter_select",
+                            pos_target=pos_target,
+                            note="已补 Enter，准备检查上车按钮",
+                            extra={"current_page": current_page, "all_points": [list(p) for p in click_points_to_try]}
+                        )
+                        found_car = True
+                        # 记住这次找到车是在哪一页
+                        self.memory_car_page = current_page
+                        self.log(f"锁定目标车辆!已记录当前页码: {current_page} SendMessage强点+Enter 点={pos_target}")
+                        break
+
+                    # 翻下一页
                     for _ in range(4):
                         self.hw_press("right", delay=0.10)
                         time.sleep(0.22)
-                    time.sleep(0.45) # 给翻页动画更充足缓冲，避免列表还在滑动时识别/点击
-            pos_target = None
-            found_car = False
-            current_page = jump_pages # 记录当前所在的真实页码
-
-            # 最多看 3 页（第 0/1/2 页），每页的顺序：搜索 → P切换重搜 → 不行就翻下一页
-            max_pages = 3
-            for page_idx in range(max_pages):
-                if not self.is_running:
-                    return False
-                pos_target = self.wait_for_new_consumable_car_strict(timeout=3.0, interval=0.2)
-
-                if pos_target:
-                    self.detail_state_confirmed = True
-                    self._save_car_select_debug(
-                        "before_target_sendmessage_click",
-                        pos_target=pos_target,
-                        note="识别到目标车；车库卡片直接使用 SendMessage 同步强点击选中",
-                        extra={"current_page": current_page, "clicks": 1, "hold": 0.22, "gap": 0.18, "use_send": True, "single_point": True, "dblclk": False}
-                    )
-                    click_points = getattr(self, "last_strict_car_click_points", [pos_target])
-                    click_points_to_try = [(int(p[0]), int(p[1])) for p in click_points[:1]]
-                    self.log(f"SendMessage 主点强点车卡: {click_points_to_try}")
-                    for idx, click_point in enumerate(click_points_to_try, start=1):
-                        if not self.is_running:
-                            return False
-                        self.log(
-                            f"[CarSelect] SendMessage 强点候选点 {idx}/{len(click_points_to_try)} "
-                            f"坐标={click_point} clicks=1 hold=0.22 gap=0.18"
-                        )
-                        self._save_car_select_debug(
-                            f"before_send_point_{idx}",
-                            pos_target=click_point,
-                            note=f"准备 SendMessage 强点候选点 {idx}",
-                            extra={"current_page": current_page, "point_index": idx, "all_points": [list(p) for p in click_points_to_try]}
-                        )
-                        self.game_click(click_point, clicks=1, hold=0.22, gap=0.18, use_send=True)
-                        time.sleep(0.35)
-                        self._save_car_select_debug(
-                            f"after_send_point_{idx}",
-                            pos_target=click_point,
-                            note=f"已 SendMessage 强点候选点 {idx}",
-                            extra={"current_page": current_page, "point_index": idx, "all_points": [list(p) for p in click_points_to_try]}
-                        )
-                    time.sleep(0.5)
-                    if not self._verify_target_point_b600(pos_target, threshold=0.72):
-                        self.log("当前候选不满足目标等级标签硬条件，判定本屏/本批无可安全处理目标，结束超抽步骤。")
+                    time.sleep(0.65)
+                    current_page += 1
+                if not found_car:
+                    if not brand_retry_done:
+                        self.log("5 页未找到满足条件的车辆，重新进入选品牌重试...")
+                        brand_retry_done = True
+                        self.memory_car_page = 0
+                        continue  # 内层 while 继续，重新选品牌
+                    else:
+                        self.log("重新选品牌后仍 5 页未找到，车辆已刷完，结束超抽步骤。")
+                        self.memory_car_page = 0
                         return True
-                    self._save_car_select_debug(
-                        "before_enter_select",
-                        pos_target=pos_target,
-                        note="主点强点结束，等级标签二次校验通过，准备按 Enter 选择当前焦点车卡",
-                        extra={"current_page": current_page, "all_points": [list(p) for p in click_points_to_try]}
-                    )
-                    # 强点会 hover/选中车卡，但当前界面仍需要 Enter 选择，才会进入“上车”菜单。
-                    self.hw_press("enter")
-                    time.sleep(1.0)
-                    self._save_car_select_debug(
-                        "after_enter_select",
-                        pos_target=pos_target,
-                        note="已补 Enter，准备检查上车按钮",
-                        extra={"current_page": current_page, "all_points": [list(p) for p in click_points_to_try]}
-                    )
-                    found_car = True
-                    # 记住这次找到车是在哪一页
-                    self.memory_car_page = current_page
-                    self.log(f"锁定目标车辆!已记录当前页码: {current_page} SendMessage强点+Enter 点={pos_target}")
-                    break
+                break  # found_car=True，跳出内层 while，继续升级流程
+            # ====== 选品牌 + 翻页找车 结束 ======
 
-                # 翻下一页
-                for _ in range(4):
-                    self.hw_press("right", delay=0.10)
-                    time.sleep(0.22)
-                time.sleep(0.65)
-                current_page += 1
-            if not found_car:
-                self.log("列表中未找到满足【全新+等级标签+目标车型】硬条件的车辆，重置记忆页码并结束超抽步骤。")
-                self.memory_car_page = 0 # 没找到说明车刷完了,清零记忆
-                return True
             already_boarding = self._is_boarding_transition()
             if already_boarding:
                 self._save_car_select_debug(
