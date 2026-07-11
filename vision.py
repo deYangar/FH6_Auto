@@ -121,16 +121,7 @@ class VisionMixin:
         except Exception as e:
             if hasattr(self, 'log'):
                 self.log(f"[Debug] 严格识别调试截图保存失败: {e}", level="DEBUG")
-        actual_path = get_img_path(template_path)
-        cache_key = actual_path
 
-        if cache_key in self.template_cache:
-            return self.template_cache[cache_key], actual_path
-
-        tpl = cv2.imread(actual_path, cv2.IMREAD_COLOR)
-        if tpl is not None:
-            self.template_cache[cache_key] = tpl
-        return tpl, actual_path
     def load_template(self, template_path):
         """加载彩色模板图（BGR），带内存缓存，返回 (template, actual_path)。"""
         actual_path = get_img_path(template_path)
@@ -1912,17 +1903,25 @@ class VisionMixin:
             TAG_Y_MIN_RATIO = 0.60
             TAG_Y_MAX_RATIO = 0.88
 
+            # 等级标签反向校验：skill car 不应显示等级标签橙色条
+            # 等级标签反向校验：skill car 不应显示目标等级标签
+            _cls_img = "anti_class_b600.png"  # 独立模板，不与方案 class_image 混用
+            CLS_ANTI_THRESHOLD = 0.70
+            CLS_Y_MIN_RATIO = 0.50      # 等级标签搜索区域：车卡下半部分
+
             # === Step 0: 预计算所有 scaled template + mask（线程安全）===
             scale_data = {}
             for scale in scales:
                 main_tpl, _ = self.get_scaled_template("skillcar.png", scale)
                 tag_tpl, _ = self.get_scaled_template("liketag.png", scale)
                 drv_tpl, _ = self.get_scaled_template("drivingtag.png", scale)
+                cls_anti_tpl, _ = self.get_scaled_template(_cls_img, scale)
                 if main_tpl is None or tag_tpl is None:
                     continue
                 h_m, w_m = main_tpl.shape[:2]
                 h_t, w_t = tag_tpl.shape[:2]
                 h_d, w_d = drv_tpl.shape[:2] if drv_tpl is not None else (0, 0)
+                h_ca, w_ca = cls_anti_tpl.shape[:2] if cls_anti_tpl is not None else (0, 0)
                 if h_m < 20 or w_m < 20 or h_m > screen_bgr.shape[0] or w_m > screen_bgr.shape[1]:
                     continue
                 if h_t < 8 or w_t < 8:
@@ -1952,6 +1951,9 @@ class VisionMixin:
                     'h_d': h_d, 'w_d': w_d,
                     'tag_x_start': tag_x_start, 'tag_x_end': tag_x_end,
                     'tag_y_start': tag_y_start, 'tag_y_end': tag_y_end,
+                    'cls_anti_tpl': cls_anti_tpl,
+                    'h_ca': h_ca, 'w_ca': w_ca,
+                    'cls_y_start': int(h_m * CLS_Y_MIN_RATIO),
                 }
 
             if not scale_data:
@@ -2029,6 +2031,38 @@ class VisionMixin:
                             f"car={car_score:.3f} scale={scale:.3f}"
                         )
                         continue
+
+                    # --- 反向校验：如果车卡底部匹配到当前方案等级标签，说明是别的车 ---
+                    cls_anti_tpl = sd['cls_anti_tpl']
+                    h_ca, w_ca = sd['h_ca'], sd['w_ca']
+                    cls_anti_score = 0.0
+                    if cls_anti_tpl is not None and h_ca >= 8 and w_ca >= 20:
+                        # 搜索区域：当前卡片底部，x方向不扩展（防止扫到相邻卡片）
+                        cls_bottom_y = max(0, car_y + sd['cls_y_start'])
+                        cls_bottom_y2 = min(screen_bgr.shape[0], car_y + h_m + h_ca)
+                        cls_x1 = max(0, car_x)
+                        cls_x2 = min(screen_bgr.shape[1], car_x + w_m)
+                        if cls_bottom_y2 > cls_bottom_y and cls_x2 > cls_x1:
+                            cls_search = screen_bgr[cls_bottom_y:cls_bottom_y2, cls_x1:cls_x2]
+                            if cls_search.shape[0] >= h_ca and cls_search.shape[1] >= w_ca:
+                                cls_res = cv2.matchTemplate(cls_search, cls_anti_tpl, cv2.TM_CCOEFF_NORMED)
+                                _, cls_anti_score, _, cls_max_loc = cv2.minMaxLoc(cls_res)
+                                self.log(
+                                    f"[SkillCarStrict] 反向校验: cls={cls_anti_score:.3f} "
+                                    f"region=({cls_x1},{cls_bottom_y})-({cls_x2},{cls_bottom_y2}) "
+                                    f"tpl={w_ca}x{h_ca} best_loc={cls_max_loc}"
+                                )
+                                if cls_anti_score >= CLS_ANTI_THRESHOLD:
+                                    self.log(
+                                        f"[SkillCarStrict] 候选({car_x},{car_y}) 被等级标签排除: "
+                                        f"cls={cls_anti_score:.3f}>={CLS_ANTI_THRESHOLD} "
+                                        f"({_cls_img}) car={car_score:.3f} scale={scale:.3f}"
+                                    )
+                                    continue
+                            else:
+                                self.log(f"[SkillCarStrict] 反向校验跳过: ROI too small ({cls_search.shape})")
+                        else:
+                            self.log(f"[SkillCarStrict] 反向校验跳过: region invalid y=[{cls_bottom_y},{cls_bottom_y2}] x=[{cls_x1},{cls_x2}]")
 
                     effective_score = car_score
                     tag_type = "like"

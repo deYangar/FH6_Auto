@@ -58,7 +58,8 @@
 
 ### 超级抽奖
 - 自动点技能路径
-- **严格选车识别**: `find_skill_car_strict` 三重验证 - skillcar.png 全屏匹配 (≥0.75) + 右下象限 liketag 或 drivingtag 验证 (≥0.75)
+- **严格选车识别**: `find_skill_car_strict` 四重验证 - skillcar.png 全屏匹配 (≥0.75) + 右下象限 liketag 或 drivingtag 验证 (≥0.75) + **等级标签反向校验 (≥0.70)**
+- **等级标签反向校验**: 在车卡底部搜索区域匹配 B600 等级标签模板 (`anti_class_b600.png`)，排除错误等级的车辆
 - **drivingtag 双验证**: 驾驶中的车独有驾驶图标,比 liketag 更唯一;drivingtag 命中时额外加分
 - **多分辨率支持**: 缩放范围 0.40~1.20,覆盖 720p~1080p
 - **多线程并行匹配**: 多尺度 matchTemplate 并行执行，速度提升 ~7 倍
@@ -151,6 +152,18 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 ---
 
 ## 更新日志
+
+### v1.2.3.0 (2026-07-11)
+
+**🚗 跑图选车等级标签反向校验**
+- `find_skill_car_strict` 新增第四重验证：在车卡底部搜索区域匹配 B600 等级标签模板
+- 使用独立模板 `images/anti_class_b600.png`，与方案的 class_image 分离，避免跨方案干扰
+- 搜索区域覆盖车卡下半 50% 高度，仅限当前卡片宽度（防止误扫相邻卡片）
+- 阈值 0.70，匹配到等级标签即排除该候选
+
+**🔧 Bug 修复**
+- 修复 `_save_strict_car_simple` 末尾误粘贴 `load_template` 代码导致 `find_new_consumable_car_strict` 崩溃（`template_path` 未定义）
+- 恢复方案1 classB600.png 为原始模板（69×26），修复超级抽奖等级标签验证失败
 
 ### v1.2.2.0 (2026-07-10)
 
