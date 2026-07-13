@@ -256,28 +256,34 @@ class RaceMixin:
         self.game_click(pos_yg)
         time.sleep(1.5)
 
-        self.hw_press("backspace")
-        time.sleep(0.8)
-        self.hw_press("up")
-        time.sleep(0.4)
-        self.hw_press("enter")
-        time.sleep(0.8)
+        if self.config.get("map_collected", False):
+            self.log("地图已收藏，跳过分享码，直接导航到地图...")
+            for _ in range(7):
+                self.hw_press("pagedown", delay=0.08)
+                time.sleep(0.5)
+        else:
+            self.hw_press("backspace")
+            time.sleep(0.8)
+            self.hw_press("up")
+            time.sleep(0.4)
+            self.hw_press("enter")
+            time.sleep(0.8)
 
-        code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
-        for char in code_text:
-            if not self.is_running:
-                return False
-            if char in DIK_CODES:
-                self.hw_press(char, delay=0.08)
-                time.sleep(0.08)
+            code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
+            for char in code_text:
+                if not self.is_running:
+                    return False
+                if char in DIK_CODES:
+                    self.hw_press(char, delay=0.08)
+                    time.sleep(0.08)
 
-        time.sleep(0.4)
-        self.hw_press("enter")
-        time.sleep(0.8)
-        self.hw_press("down")
-        time.sleep(0.3)
-        self.hw_press("enter")
-        time.sleep(1.5)
+            time.sleep(0.4)
+            self.hw_press("enter")
+            time.sleep(0.8)
+            self.hw_press("down")
+            time.sleep(0.3)
+            self.hw_press("enter")
+            time.sleep(1.5)
 
         # 蓝图搜索结果检测：循环检查 racenotfound（蓝图失效）和 VEI（赛事信息）
         blueprint_result = None

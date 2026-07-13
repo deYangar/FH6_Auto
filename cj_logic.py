@@ -71,10 +71,10 @@ class CJMixin:
             self.log(f"[UpgradeDebug] 保存失败({stage}): {e}")
 
     def _wait_for_uandt_ready(self, timeout=12.0, stable_frames=3, min_brightness=42.0, press_esc_when_missing=False):
-        """等待“升级与调校”所在车辆菜单真正加载稳定。
+        """等待"升级与调校"所在车辆菜单真正加载稳定。
 
         加载暗屏阶段模板可能提前命中，但菜单还不可交互；必须亮度足够且连续多帧命中同一位置。
-        press_esc_when_missing=True 时，适用于“上车”后仍停在收藏/详情层，需要 Esc 退回车辆主菜单的场景。
+        press_esc_when_missing=True 时，适用于"上车"后仍停在收藏/详情层，需要 Esc 退回车辆主菜单的场景。
         """
         start = time.time()
         stable = 0
@@ -83,6 +83,7 @@ class CJMixin:
         last_brightness = 0.0
         last_seen = None
         last_esc_at = 0.0
+        slow_mode = False  # 黑屏恢复后切换为慢速 Esc 模式（3s 间隔）
 
         while time.time() - start < timeout:
             if not self.is_running:
@@ -114,12 +115,27 @@ class CJMixin:
                     return pos
             else:
                 stable = 0
+                # 检测黑屏：亮度极低时标记，画面恢复后切换慢速 Esc 模式
+                if last_brightness < 5.0:
+                    if not slow_mode:
+                        self.log(f"检测到画面暗屏 brightness={last_brightness:.1f}，恢复后将切换慢速 Esc 模式")
+                        slow_mode = True
+                        last_esc_at = 0  # 重置，等画面亮起后重新计时
+                elif slow_mode and last_esc_at == 0 and last_brightness >= min_brightness:
+                    self.log(f"画面已恢复 brightness={last_brightness:.1f}，进入慢速 Esc 模式（3s间隔）")
+                    last_esc_at = time.time()
+
+                esc_interval = 3.0 if slow_mode else 1.2
+
                 # 上车后如果仍在车辆收藏/详情层，升级与调校不可见；加载完成后按 Esc 回到车辆主菜单。
-                if press_esc_when_missing and last_brightness >= min_brightness and time.time() - last_esc_at >= 1.2:
+                if press_esc_when_missing and last_brightness >= min_brightness and time.time() - last_esc_at >= esc_interval:
                     self.log(f"上车后尚未看到升级与调校，画面已亮起，按 Esc 尝试退回车辆菜单 brightness={last_brightness:.1f}")
                     self.hw_press("esc")
                     last_esc_at = time.time()
-                    time.sleep(0.6)
+                    if slow_mode:
+                        time.sleep(3.0)
+                    else:
+                        time.sleep(0.6)
 
             time.sleep(0.35)
 

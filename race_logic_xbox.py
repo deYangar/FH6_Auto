@@ -21,6 +21,7 @@ class RaceMixin:
         if not self.focus_game_for_foreground_input(timeout=2.0):
             return False
 
+        # Backspace → Up → Enter 打开搜索框
         steps = [
             ("backspace", 0.08, 0.8),
             ("up", 0.08, 0.4),
@@ -31,6 +32,18 @@ class RaceMixin:
                 self.log(f"分享码输入前置按键失败: {key}")
                 return False
             time.sleep(wait_after)
+
+        # Xbox 分享码输入前超时等待（搜索框打开后，输入数字前）
+        try:
+            wait_sec = max(1, int(self.config.get("sharecode_timeout", 10)))
+        except (ValueError, TypeError):
+            wait_sec = 10
+        self.log(f"搜索框已打开，等待 {wait_sec}s 后开始输入...")
+        deadline = time.time() + wait_sec
+        while self.is_running and time.time() < deadline:
+            time.sleep(0.5)
+        if not self.is_running:
+            return False
 
         # 用 backspace 清空输入框可能残留的内容（Ctrl+A 在 Xbox 文本框会产生控制字符）
         for _ in range(10):
@@ -299,9 +312,15 @@ class RaceMixin:
         self.game_click(pos_yg)
         time.sleep(1.5)
 
-        code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
-        if not self.input_share_code_foreground(code_text):
-            return False
+        if self.config.get("map_collected", False):
+            self.log("地图已收藏，跳过分享码，直接导航到地图...")
+            for _ in range(7):
+                self.hw_press("pagedown", delay=0.08)
+                time.sleep(0.5)
+        else:
+            code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
+            if not self.input_share_code_foreground(code_text):
+                return False
 
         # 蓝图搜索结果检测：循环检查 racenotfound（蓝图失效）和 VEI（赛事信息）
         blueprint_result = None

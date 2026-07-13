@@ -405,6 +405,8 @@ class FH_UltimateBot(
             if hasattr(self, "entry_race_timeout"):
                 self.config["race_timeout"] = max(60, int(self.entry_race_timeout.get()))
             self.config["share_code"] = "".join(c for c in self.entry_share.get() if c.isdigit())
+            if hasattr(self, "entry_sharecode_timeout"):
+                self.config["sharecode_timeout"] = max(1, int(self.entry_sharecode_timeout.get()))
             self.config["next_1"] = int(self.entry_next1.get())
             self.config["next_2"] = int(self.entry_next2.get())
             self.config["next_3"] = int(self.entry_next3.get())
@@ -433,6 +435,8 @@ class FH_UltimateBot(
             self.config["auto_shutdown"] = self.var_auto_shutdown.get()
         if hasattr(self, "var_diagnostic_mode"):
             self.config["diagnostic_mode"] = self.var_diagnostic_mode.get()
+        if hasattr(self, "var_map_collected"):
+            self.config["map_collected"] = self.var_map_collected.get()
         # 同步当前方案
         self._sync_to_current_scheme()
         try:
@@ -454,7 +458,8 @@ class FH_UltimateBot(
             "class_image", "race_count", "buy_count", "cj_count",
             "sell_count", "skill_dirs", "share_code", "cj_mode",
             "chk_1", "chk_2", "chk_3", "chk_4",
-            "next_1", "next_2", "next_3", "next_4"
+            "next_1", "next_2", "next_3", "next_4",
+            "map_collected"
         ]:
             if k in self.config:
                 scheme[k] = self.config[k]
@@ -546,6 +551,8 @@ class FH_UltimateBot(
             self.var_chk3.set(scheme.get("chk_3", True))
         if hasattr(self, "var_chk4"):
             self.var_chk4.set(scheme.get("chk_4", True))
+        if hasattr(self, "var_map_collected"):
+            self.var_map_collected.set(scheme.get("map_collected", False))
         if hasattr(self, "opt_cj_mode"):
             cj_mode = scheme.get("cj_mode", 2)
             if cj_mode == 2:
@@ -926,9 +933,26 @@ class FH_UltimateBot(
             "#1F6AA5",
             self.config.get("race_count", 99),
         )
+        box_race.configure(height=300)
         self.entry_share = ctk.CTkEntry(box_race, width=128, height=30, justify="center", placeholder_text="蓝图数字代码")
         self.entry_share.insert(0, self.config.get("share_code", "890169683"))
-        self.entry_share.pack(pady=(2, 8))
+        self.entry_share.pack(pady=(2, 4))
+
+        # Xbox 版本专属：分享码输入超时设置
+        if hasattr(self, 'input_share_code_foreground'):
+            timeout_frame = ctk.CTkFrame(box_race, fg_color="transparent")
+            timeout_frame.pack(pady=(0, 8))
+            ctk.CTkLabel(timeout_frame, text="输入前等待(秒):", font=ctk.CTkFont(size=14), text_color="#8899AA").pack(side="left", padx=(0, 6))
+            self.entry_sharecode_timeout = ctk.CTkEntry(timeout_frame, width=44, height=26, justify="center")
+            self.entry_sharecode_timeout.insert(0, str(self.config.get("sharecode_timeout", 10)))
+            self.entry_sharecode_timeout.pack(side="left")
+
+        self.var_map_collected = ctk.BooleanVar(value=self.config.get("map_collected", False))
+        self.cb_map_collected = ctk.CTkCheckBox(
+            box_race, text="地图已收藏", variable=self.var_map_collected,
+            command=self.save_config, width=120
+        )
+        self.cb_map_collected.pack(pady=(0, 4))
 
         self.next_frame1, self.entry_next1, self.chk1 = create_next_step(
             self.config_frame, self.var_chk1, self.config.get("next_1", 2)
