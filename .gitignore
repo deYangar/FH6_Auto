@@ -58,3 +58,15 @@ Thumbs.db
 马自达/
 
 test_png_cache.py
+
+# ONNX debug files
+debug/det_heatmap.png
+
+# Release notes (keep only latest)
+release_notes_v*.md
+
+# ONNX model cache
+onnx_models/**/.cache/
+onnx_models/**/.gitattributes
+onnx_models/**/README.md
+onnx_models/**/inference.json

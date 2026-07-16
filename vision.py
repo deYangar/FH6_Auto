@@ -809,7 +809,7 @@ class VisionMixin:
                 except Exception:
                     return (scale, [], 0.0, (0, 0))
 
-            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) - 1))
+            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) // 2))
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 parallel_results = list(ex.map(_match_one_scale, scale_data.items()))
 
@@ -1110,7 +1110,7 @@ class VisionMixin:
         except Exception as e:
             self.log(f"find_image_gray 异常: {e}")
             return None
-    def find_any_image_gray(self, image_list, region=None, threshold=0.75, fast_mode=True, invert_mode=False):
+    def find_any_image_gray(self, image_list, region=None, threshold=0.75, fast_mode=True, invert_mode=False, return_name=False):
         """
         纯灰度多图查找,支持多分辨率缩放 + 可选翻转模式
         参数:
@@ -1119,10 +1119,11 @@ class VisionMixin:
             threshold (float): 匹配阈值,范围通常 0~1,越高越严格
             fast_mode (bool): 是否使用快速缩放搜索模式,True=较少缩放比,False=更多缩放比
             invert_mode (bool): 是否启用翻转模式,True 时会同时匹配原图和反相图(白底黑字 / 黑底白字都能识别)
+            return_name (bool): 为 True 时返回 (x, y, img_path),为 False 时返回 (x, y)
         返回:
             tuple|None:
-                - 找到任意一张时返回匹配中心点坐标 (x, y)
-                - 都找不到返回 None
+                - return_name=False: 找到任意一张时返回匹配中心点坐标 (x, y),找不到返回 None
+                - return_name=True: 找到时返回 (x, y, img_path),找不到返回 None
         """
         if not self.is_running:
             return None
@@ -1155,10 +1156,9 @@ class VisionMixin:
                     _, max_val, _, max_loc = cv2.minMaxLoc(res)
                     if max_val >= effective_threshold:
                         self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
-                        return (
-                            max_loc[0] + w // 2 + (region[0] if region else 0),
-                            max_loc[1] + h // 2 + (region[1] if region else 0),
-                        )
+                        cx = max_loc[0] + w // 2 + (region[0] if region else 0)
+                        cy = max_loc[1] + h // 2 + (region[1] if region else 0)
+                        return (cx, cy, img_path) if return_name else (cx, cy)
 
                     # ==============================
                     # 【新增】翻转模式:反相模板匹配
@@ -1169,10 +1169,9 @@ class VisionMixin:
                         _, max_val_inv, _, max_loc_inv = cv2.minMaxLoc(res_inv)
                         if max_val_inv >= effective_threshold:
                             self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {effective_threshold:.3f}) | 缩放比: {scale:.3f}")
-                            return (
-                                max_loc_inv[0] + w // 2 + (region[0] if region else 0),
-                                max_loc_inv[1] + h // 2 + (region[1] if region else 0),
-                            )
+                            cx = max_loc_inv[0] + w // 2 + (region[0] if region else 0)
+                            cy = max_loc_inv[1] + h // 2 + (region[1] if region else 0)
+                            return (cx, cy, img_path) if return_name else (cx, cy)
 
             return None
         except Exception as e:
@@ -1973,7 +1972,7 @@ class VisionMixin:
                 except Exception:
                     return (scale, [])
 
-            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) - 1))
+            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) // 2))
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 parallel_results = list(ex.map(_match_one_scale, scale_data.items()))
 

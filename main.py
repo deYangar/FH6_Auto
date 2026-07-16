@@ -322,7 +322,7 @@ class FH_UltimateBot(
             "next_3": 1,
             "global_loops": 10,
             "skill_dirs": ["right", "up", "up", "up", "left"],
-            "share_code": "890169683",
+            "share_code": "103435586",
             "auto_restart": False,
             "restart_cmd": "start steam://run/2483190",
             "race_timeout": 300,
@@ -356,7 +356,7 @@ class FH_UltimateBot(
                 "cj_count": self.config.get("cj_count", 30),
                 "sell_count": self.config.get("sell_count", 30),
                 "skill_dirs": self.config.get("skill_dirs", ["right", "up", "up", "up", "left"]),
-                "share_code": self.config.get("share_code", "890169683"),
+                "share_code": self.config.get("share_code", "103435586"),
                 "cj_mode": self.config.get("cj_mode", 2),
                 "chk_1": self.config.get("chk_1", True),
                 "chk_2": self.config.get("chk_2", True),
@@ -425,6 +425,7 @@ class FH_UltimateBot(
         self.config["auto_restart"] = self.var_auto_restart.get()
         self.config["debug_screenshots"] = self.var_debug_screenshots.get()
         self.config["focus_hook_enabled"] = self.var_focus_hook.get()
+        self.config["use_directml"] = self.var_directml.get()
         self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
         if hasattr(self, "opt_cj_mode"):
             cj_mode_val = self.opt_cj_mode.get()
@@ -435,8 +436,6 @@ class FH_UltimateBot(
             self.config["auto_shutdown"] = self.var_auto_shutdown.get()
         if hasattr(self, "var_diagnostic_mode"):
             self.config["diagnostic_mode"] = self.var_diagnostic_mode.get()
-        if hasattr(self, "var_map_collected"):
-            self.config["map_collected"] = self.var_map_collected.get()
         # 同步当前方案
         self._sync_to_current_scheme()
         try:
@@ -458,8 +457,7 @@ class FH_UltimateBot(
             "class_image", "race_count", "buy_count", "cj_count",
             "sell_count", "skill_dirs", "share_code", "cj_mode",
             "chk_1", "chk_2", "chk_3", "chk_4",
-            "next_1", "next_2", "next_3", "next_4",
-            "map_collected"
+            "next_1", "next_2", "next_3", "next_4"
         ]:
             if k in self.config:
                 scheme[k] = self.config[k]
@@ -530,7 +528,7 @@ class FH_UltimateBot(
             self.entry_sc.insert(0, str(scheme.get("sell_count", 30)))
         if hasattr(self, "entry_share"):
             self.entry_share.delete(0, "end")
-            self.entry_share.insert(0, str(scheme.get("share_code", "890169683")))
+            self.entry_share.insert(0, str(scheme.get("share_code", "103435586")))
         if hasattr(self, "entry_next1"):
             self.entry_next1.delete(0, "end")
             self.entry_next1.insert(0, str(scheme.get("next_1", 2)))
@@ -551,8 +549,6 @@ class FH_UltimateBot(
             self.var_chk3.set(scheme.get("chk_3", True))
         if hasattr(self, "var_chk4"):
             self.var_chk4.set(scheme.get("chk_4", True))
-        if hasattr(self, "var_map_collected"):
-            self.var_map_collected.set(scheme.get("map_collected", False))
         if hasattr(self, "opt_cj_mode"):
             cj_mode = scheme.get("cj_mode", 2)
             if cj_mode == 2:
@@ -935,8 +931,13 @@ class FH_UltimateBot(
         )
         box_race.configure(height=300)
         self.entry_share = ctk.CTkEntry(box_race, width=128, height=30, justify="center", placeholder_text="蓝图数字代码")
-        self.entry_share.insert(0, self.config.get("share_code", "890169683"))
+        self.entry_share.insert(0, self.config.get("share_code", "103435586"))
         self.entry_share.pack(pady=(2, 4))
+
+        # DirectML 加速选项
+        self.var_directml = ctk.BooleanVar(value=self.config.get("use_directml", False))
+        self.chk_directml = ctk.CTkCheckBox(box_race, text="DirectML加速\n（会占用100M左右显存）", variable=self.var_directml, width=160, font=ctk.CTkFont(size=13))
+        self.chk_directml.pack(pady=(2, 4))
 
         # Xbox 版本专属：分享码输入超时设置
         if hasattr(self, 'input_share_code_foreground'):
@@ -946,13 +947,6 @@ class FH_UltimateBot(
             self.entry_sharecode_timeout = ctk.CTkEntry(timeout_frame, width=44, height=26, justify="center")
             self.entry_sharecode_timeout.insert(0, str(self.config.get("sharecode_timeout", 10)))
             self.entry_sharecode_timeout.pack(side="left")
-
-        self.var_map_collected = ctk.BooleanVar(value=self.config.get("map_collected", False))
-        self.cb_map_collected = ctk.CTkCheckBox(
-            box_race, text="地图已收藏", variable=self.var_map_collected,
-            command=self.save_config, width=120
-        )
-        self.cb_map_collected.pack(pady=(0, 4))
 
         self.next_frame1, self.entry_next1, self.chk1 = create_next_step(
             self.config_frame, self.var_chk1, self.config.get("next_1", 2)
@@ -1676,6 +1670,9 @@ class FH_UltimateBot(
         self.save_config()
         self.start_anti_cheat_heartbeat()
 
+        # OCR 加速选项
+        self.use_directml = self.var_directml.get()
+
         self.reset_run_stats()
         self.update_running_state("running")
         self.update_timer()
@@ -1823,6 +1820,10 @@ class FH_UltimateBot(
         self.is_paused = False  # <--- 【新增】彻底停止时必须解除暂停锁
         self.stop_anti_cheat_heartbeat()
         self.finish_diagnostic_trace_session()
+
+        # 清理 OCR 引擎
+        if hasattr(self, 'stop_ocr_engine'):
+            self.stop_ocr_engine()
 
         for key in list(DIK_CODES.keys()) + ["w", "e", "y", "enter", "esc", "up", "down", "left", "right", "space", "backspace"]:
             self.hw_key_up(key)

@@ -6,3 +6,5 @@ pydirectinput
 pynput
 pillow
 pywin32
+onnxruntime-directml
+pyyaml
