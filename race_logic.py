@@ -18,42 +18,77 @@ class RaceMixin:
     _ocr_engine = None
 
     def get_ocr_engine(self):
-        """获取或创建 OCR 引擎"""
+        """获取或创建 OCR 引擎（DirectML 切换时自动重建）"""
+        use_dml = getattr(self, 'use_directml', False)
+        if self._ocr_engine is not None:
+            # DirectML 状态变了，重建引擎
+            if self._ocr_engine.use_directml != use_dml:
+                self.log(f"OCR: DirectML 状态变更 ({self._ocr_engine.use_directml} → {use_dml})，重建引擎...")
+                self._ocr_engine = None
         if self._ocr_engine is None:
-            use_dml = getattr(self, 'use_directml', False)
             self._ocr_engine = OCREngine(log_func=self.log, use_directml=use_dml)
             self._ocr_engine.init()
         return self._ocr_engine
 
-    def stop_ocr_engine(self):
-        """停止 OCR 引擎"""
-        if self._ocr_engine is not None:
-            self._ocr_engine = None
-            self.log("[OCR] 引擎已释放")
-
-    def ocr_detect_race_result(self):
+    def ocr_detect_race_result(self, is_last_lap):
         """
-        用 OCR 检测当前比赛结果（win/fail）
-        截图后发给 OCR 引擎，返回 'win' / 'fail' / 'unknown'
+        用 OCR 检测画面底部 1/5 区域的按钮文字
+        根据按钮布局 + 是否末轮决定该按的键
+
+        按钮布局：
+          成功: Esc重试  Enter继续
+          失败: Esc退出  Enter重试
+
+        决策：
+          非末轮 → 按「重试」
+            成功时重试=Esc, 失败时重试=Enter
+          末轮 → 按「退出」或「继续」
+            成功时继续=Enter, 失败时退出=Esc
+
+        返回 'enter' / 'esc' / None
         """
         engine = self.get_ocr_engine()
-        if engine is None or engine.session is None:
+        if engine is None or engine.rec_session is None:
             self.log("OCR 引擎不可用")
             return None
 
-        # 截图
         img = self.capture_region(self.regions["全界面"])
         if img is None:
             return None
 
-        result = engine.detect(img)
-        status = result.get("status")
-        if status == "error":
-            self.log(f"OCR 错误: {result.get('error', 'unknown')}", level="DEBUG")
+        text = engine.detect_text_in_region(img, {
+            "y_start": 0.78,
+            "y_end": 1.0,
+            "x_start": 0,
+            "x_end": 1.0,
+        })
+
+        if not text:
             return None
-        if status != "unknown":
-            self.log(f"OCR 识别: {result.get('text', '')} -> {status}", level="DEBUG")
-        return status
+
+        # 判断画面类型：成功 or 失败
+        is_win_screen = "继续" in text or "续" in text
+        is_fail_screen = "退出" in text or "出" in text
+
+        if not is_win_screen and not is_fail_screen:
+            return None
+
+        if is_win_screen:
+            # 成功: Esc=重试, Enter=继续
+            if is_last_lap:
+                self.log(f"OCR 成功末轮: {text} → Enter(继续)")
+                return "enter"
+            else:
+                self.log(f"OCR 成功非末轮: {text} → Esc(重试)")
+                return "esc"
+        else:
+            # 失败: Esc=退出, Enter=重试
+            if is_last_lap:
+                self.log(f"OCR 失败末轮: {text} → Esc(退出)")
+                return "esc"
+            else:
+                self.log(f"OCR 失败非末轮: {text} → Enter(重试)")
+                return "enter"
 
     def _save_race_car_debug(self, stage, note="", extra=None):
         """保存循环跑图选车阶段的组合识别调试记录。"""
@@ -244,17 +279,11 @@ class RaceMixin:
         self.current_thread.start()
 
     # ==========================================
-    # --- 模块:跑图（新版 v2 - 适配游戏更新）---
+    # --- 辅助：从主菜单导航到 EventLab 并进入赛事 ---
     # ==========================================
-    def logic_race(self, target_count):
-        if self.race_counter >= target_count:
-            return True
-
-        self.update_running_ui("循环跑图", self.race_counter, target_count)
-
-        # ====== 任务内锁定 ======
-        self.detail_state_confirmed = False
-
+    def _navigate_to_eventlab_and_enter(self):
+        """阶段2~5: 进入主菜单 → EventLab → 分享码 → 蓝图检测 → 进入赛事
+        Returns True on success, False on failure."""
         # ====== 阶段1：进入主菜单 ======
         self.log("阶段1: 进入主菜单...")
         if not self.enter_menu():
@@ -276,11 +305,9 @@ class RaceMixin:
             self.log("未找到 eventlab")
             return False
 
-        # 匹配到后点击进入，再按 Down + Enter
         self.game_click(pos_el)
         time.sleep(2.0)
 
-        # 匹配 joinchallenge.png 并点击
         pos_jc = self.wait_for_image_gray(
             "joinchallenge.png",
             region=self.regions["全界面"],
@@ -295,8 +322,6 @@ class RaceMixin:
 
         # ====== 阶段3：搜索并进入 ======
         self.log("阶段3: 搜索赛事...")
-
-        # 直接进入分享码输入
         self.hw_press("backspace")
         time.sleep(0.8)
         self.hw_press("up")
@@ -310,8 +335,8 @@ class RaceMixin:
             if not self.is_running:
                 return False
             if char in DIK_CODES:
-                self.hw_press(char, delay=0.08)
-                time.sleep(0.08)
+                self.hw_press(char, delay=0.15)
+                time.sleep(0.15)
 
         time.sleep(0.4)
         self.hw_press("enter")
@@ -322,18 +347,17 @@ class RaceMixin:
         time.sleep(1.5)
         self.log("阶段3完成: 分享码已输入")
 
-        # ====== 阶段4：蓝图结果检测 ======
-        self.log("阶段4: 检测蓝图结果...")
-        blueprint_result = None
+        # ====== 阶段4：蓝图结果检测（OCR 下 1/5 区域） ======
+        self.log("阶段4: 检测蓝图结果（OCR）...")
         blueprint_wait_deadline = time.time() + 20
         blueprint_last_wait_log = 0.0
         profile_nf = get_recognition_profile(self, "race.blueprint_not_found")
-        profile_ready = get_recognition_profile(self, "race.blueprint_ready")
+        engine = self.get_ocr_engine()
         while self.is_running and time.time() < blueprint_wait_deadline:
             now = time.time()
             if now - blueprint_last_wait_log >= 2.0:
                 remaining = max(0.0, blueprint_wait_deadline - now)
-                self.log(f"蓝图搜索结果待确认，继续等待... 剩余 {remaining:.1f}s", level="DEBUG")
+                self.log(f"蓝图搜索结果待确认，继续等待... 剩余 {remaining:.1f}s")
                 blueprint_last_wait_log = now
 
             if self.find_image_gray(
@@ -345,19 +369,27 @@ class RaceMixin:
             ):
                 return self.abort_invalid_blueprint_and_back_to_roam()
 
-            blueprint_result = self.find_image_gray(
-                "VEI.png",
-                region=self.regions["下"],
-                threshold=profile_ready["threshold"],
-                fast_mode=profile_ready["fast_mode"],
-                invert_mode=profile_ready["invert_mode"],
-            )
-            if blueprint_result:
-                self.log("已识别到目标赛事信息")
-                break
-            time.sleep(0.25)
+            img = self.capture_region(self.regions["全界面"])
+            if img is not None:
+                try:
+                    text = engine.detect_text_in_region(img, {
+                        "y_start": 0.80,
+                        "y_end": 1.0,
+                        "x_start": 0,
+                        "x_end": 1.0,
+                    })
+                except Exception as e:
+                    self.log(f"OCR 异常，跳过: {e}")
+                    text = ""
+                if "挑战选项" in text or "挑战" in text:
+                    self.log(f"OCR 识别到比赛入口: {text}")
+                    break
 
-        if not blueprint_result:
+            time.sleep(0.5)
+
+        if not self.is_running:
+            return False
+        if time.time() >= blueprint_wait_deadline:
             return self.abort_invalid_blueprint_and_back_to_roam()
         self.log("阶段4完成: 蓝图有效")
 
@@ -365,11 +397,160 @@ class RaceMixin:
         self.hw_press("enter")
         time.sleep(2.0)
         self.log("阶段5完成: 已进入赛事，等待自动发车...")
+        return True
+
+    # ==========================================
+    # --- 模块:跑图（新版 v2 - 适配游戏更新）---
+    # ==========================================
+    def logic_race(self, target_count):
+        if self.race_counter >= target_count:
+            return True
+
+        self.update_running_ui("循环跑图", self.race_counter, target_count)
+
+        # ====== 任务内锁定 ======
+        self.detail_state_confirmed = False
+
+        # ====== 预热 OCR 引擎 ======
+        self.log("预热 OCR 引擎...")
+        self.get_ocr_engine()
+
+        # ====== 阶段0：选车 ======
+        self.log("阶段0: 进入选车...")
+        # 先检测是否已在主菜单，没在才按 ESC
+        if not self.find_image_gray("collectionjournal.png", region=self.regions["左"], threshold=0.70, fast_mode=True):
+            self.hw_press("esc")
+            time.sleep(1.0)
+            for _ in range(5):
+                if not self.is_running:
+                    return False
+                if self.find_image_gray("collectionjournal.png", region=self.regions["左"], threshold=0.70, fast_mode=True):
+                    break
+                time.sleep(1.0)
+        self.hw_press("pagedown", delay=0.15)
+        time.sleep(1.0)
+
+        pos_cc = self.wait_for_image_gray(
+            "changecar.png",
+            region=self.regions["全界面"],
+            threshold=0.75, timeout=5, interval=0.25, fast_mode=True
+        )
+        if not pos_cc:
+            self.log("未找到 changecar")
+            return False
+        self.game_click(pos_cc)
+        time.sleep(1.0)
+
+        # 旧版选车流程（从 main 分支搬过来，内容不变）
+        pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
+        if pos_target:
+            self.detail_state_confirmed = True
+
+        if not pos_target:
+            self.log("严格匹配未命中：skillcar + liketag 固定位置验证未通过，重新选品牌...")
+            self._save_race_car_debug(
+                "combo_miss_before_brand",
+                note="初次严格匹配未命中，保存 skillcar/liketag 最佳匹配情况",
+                extra={"main": "skillcar.png", "sub": "liketag.png"}
+            )
+            self.log("未找到带 liketag 的目标车辆,重新选品牌...")
+            self.hw_press("backspace")
+            time.sleep(1.2)
+
+            found_brand = False
+            for _ in range(3):
+                if not self.is_running:
+                    return False
+
+                pos_brand = self.wait_for_image_gray("skillcarbrand.png", region=self.regions["全界面"], threshold=0.8, timeout=1.2, interval=0.2, fast_mode=True)
+                if pos_brand:
+                    self.game_click(pos_brand)
+                    time.sleep(1.2)
+                    found_brand = True
+                    break
+
+                self.hw_press("up")
+                time.sleep(0.4)
+
+            if not found_brand:
+                self.log("三次尝试未找到刷图车辆品牌。")
+                return False
+
+            for _ in range(20):
+                if not self.is_running:
+                    return False
+
+                pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
+                if pos_target:
+                    self.detail_state_confirmed = True
+
+                if not pos_target:
+                    self.log("严格匹配未命中：skillcar + liketag 固定位置验证未通过，本页跳过。")
+                    self._save_race_car_debug(
+                        "combo_miss_page",
+                        note="翻页/品牌选择后严格匹配未命中，保存本页 skillcar/liketag 最佳匹配情况",
+                        extra={"main": "skillcar.png", "sub": "liketag.png"}
+                    )
+                if pos_target:
+                    break
+
+                for _ in range(4):
+                    self.hw_press("right", delay=0.08)
+                    time.sleep(0.08)
+                time.sleep(0.4)
+
+        if not pos_target:
+            self.log("翻页未能找到带有 liketag 的刷图车辆!")
+            return False
+
+        # 点击前先检测 drivingtag，判断车辆是否已在驾驶中
+        # 在车卡右下角区域检测（车中心点右下，窗口长宽*0.2）
+        sw = self.regions["全界面"][2]
+        sh = self.regions["全界面"][3]
+        det_w = int(sw * 0.2)
+        det_h = int(sh * 0.2)
+        has_drivingtag = self.find_image(
+            "drivingtag.png",
+            region=(pos_target[0], pos_target[1], det_w, det_h),
+            threshold=0.75,
+            fast_mode=True
+        )
+        if has_drivingtag:
+            self.log("检测到 drivingtag，车辆已在驾驶")
+            self.hw_press("esc")
+            time.sleep(0.7)
+            self.hw_press("esc")
+            time.sleep(1.0)
+        else:
+            self.game_click(pos_target)
+            time.sleep(0.5)
+            self.hw_press("enter")
+            time.sleep(1.0)
+            self.hw_press("enter")
+            time.sleep(4.0)
+            self.log("选车完成,等待5秒后开始跑图...")
+            time.sleep(5.0)
+
+        # ====== 阶段1~5：进入主菜单→EventLab→分享码→蓝图→进入赛事 ======
+        if not self._navigate_to_eventlab_and_enter():
+            return False
 
         # ====== 阶段7：跑图循环 ======
         self.log("开始循环跑图!")
 
+        recovery_eventlab = False
+
         while self.race_counter < target_count:
+            if not self.is_running:
+                return False
+
+            # 检测到异常退出，重新走 EventLab 流程恢复
+            if recovery_eventlab:
+                recovery_eventlab = False
+                self.log("检测到异常退出跑图，重新走 EventLab 流程...")
+                if not self._navigate_to_eventlab_and_enter():
+                    return False
+                self.log("已恢复进入赛事，继续跑图")
             if not self.is_running:
                 return False
 
@@ -452,21 +633,20 @@ class RaceMixin:
 
                 # OCR 检测完赛状态
                 if now - race_start_time > 10:  # 比赛开始 10s 后才检测
-                    ocr_result = self.ocr_detect_race_result()
-                    if ocr_result == "win" or ocr_result == "fail":
+                    try:
+                        ocr_result = self.ocr_detect_race_result(is_last_lap)
+                    except Exception as e:
+                        import traceback
+                        self.log(f"[ERROR] OCR 检测异常，跳过本轮: {e}")
+                        self.log(f"[OCR-TRACEBACK]\n{traceback.format_exc()}")
+                        ocr_result = None
+                    if ocr_result in ("enter", "esc"):
                         self.hw_key_up("w")
                         self.hw_key_up("up")
                         driving_keys_held = False
 
-                        # 确定该按的键
-                        if ocr_result == "win":
-                            key = "enter" if is_last_lap else "esc"
-                            self.log(f"OCR 检测到 WIN，按 {key.upper()}...")
-                        else:
-                            key = "esc" if is_last_lap else "enter"
-                            self.log(f"OCR 检测到 FAIL，按 {key.upper()}...")
-
-                        self.hw_press(key)
+                        self.log(f"比赛结束，按 {ocr_result.upper()}...")
+                        self.hw_press(ocr_result)
 
                         # 释放所有按键后等 1s 再验证
                         if self.bg_input:
@@ -474,7 +654,7 @@ class RaceMixin:
                         time.sleep(1.0)
 
                         # 二次 OCR 验证：如果还能检测到，说明按键没生效，再按一次
-                        verify = self.ocr_detect_race_result()
+                        verify = self.ocr_detect_race_result(is_last_lap)
                         if verify == ocr_result:
                             self.log(f"二次 OCR 仍为 {ocr_result}，按键可能未生效，重按 {key.upper()}...")
                             self.hw_press(key)
@@ -484,6 +664,35 @@ class RaceMixin:
                         break
 
                 time.sleep(1.0)  # OCR 检测间隔 1 秒
+
+                # 卡死检测：90 秒未检测到比赛结果，尝试恢复
+                if now - race_start_time > 90:
+                    self.log("已 90 秒未检测到比赛结果，尝试按 ESC 检查主菜单...")
+                    self.hw_key_up("w")
+                    self.hw_key_up("up")
+                    driving_keys_held = False
+                    if self.bg_input:
+                        self.bg_input.release_all()
+                    time.sleep(0.5)
+                    self.hw_press("esc")
+                    time.sleep(1.5)
+                    # 检查是否在主菜单
+                    pos_menu = self.find_image_gray(
+                        "collectionjournal.png",
+                        region=self.regions["左"],
+                        threshold=0.70, fast_mode=True
+                    )
+                    if pos_menu:
+                        self.log("检测到主菜单，从 EventLab 重新进入赛事...")
+                        recovery_eventlab = True
+                        break
+                    else:
+                        self.log("未检测到主菜单，恢复驾驶继续跑图...")
+                        self.hw_key_down("w")
+                        self.hw_key_down("up")
+                        driving_keys_held = True
+                        race_start_time = time.time()
+                        last_vram_chk = time.time()
 
             # 确保按键释放
             self.hw_key_up("w")
@@ -513,6 +722,10 @@ class RaceMixin:
                     time.sleep(4.0)
                 else:
                     self.log("未找到 restarta.png,尝试直接继续...")
+                continue
+
+            # 卡死恢复：跳过计数，重新走 EventLab
+            if recovery_eventlab:
                 continue
 
             if not finished:

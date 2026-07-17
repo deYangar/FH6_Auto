@@ -271,6 +271,9 @@ class SellMixin:
                 self.update_running_ui("移除车辆", self.sc_count, target_count)
                 self.log(f"成功移除车辆！当前进度: {self.sc_count}/{target_count}")
 
+                # 删了车就重置 retry 计数器，下轮没找到时还有 retry 机会
+                brand_retry_done = False
+
             # 内层 while 结束：要么任务完成，要么 5 页未找到
             if not should_retry_brand:
                 break

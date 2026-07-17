@@ -369,7 +369,8 @@ class CJMixin:
                 else:
                     self.log("未找到选择车辆(choosecar.png)")
                     return False
-            # ====== 选品牌 + 翻页找车（最多重试 1 次）======
+            # ====== 选品牌 + 翻页找车 ======
+            brand_retry_done = False
             while True:
                 self.hw_press("backspace")
                 time.sleep(1.0)
@@ -511,6 +512,8 @@ class CJMixin:
                         return True
                 break  # found_car=True，跳出内层 while，继续升级流程
             # ====== 选品牌 + 翻页找车 结束 ======
+            # 成功找到车 → 重置 retry 计数器（下一轮没找到时允许重试）
+            brand_retry_done = False
 
             already_boarding = self._is_boarding_transition()
             if already_boarding:

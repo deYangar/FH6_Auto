@@ -936,7 +936,7 @@ class FH_UltimateBot(
 
         # DirectML 加速选项
         self.var_directml = ctk.BooleanVar(value=self.config.get("use_directml", False))
-        self.chk_directml = ctk.CTkCheckBox(box_race, text="DirectML加速\n（会占用100M左右显存）", variable=self.var_directml, width=160, font=ctk.CTkFont(size=13))
+        self.chk_directml = ctk.CTkCheckBox(box_race, text="DirectML加速OCR\n会占用少量显存", variable=self.var_directml, width=160, font=ctk.CTkFont(size=13))
         self.chk_directml.pack(pady=(2, 4))
 
         # Xbox 版本专属：分享码输入超时设置
@@ -1720,7 +1720,9 @@ class FH_UltimateBot(
                     elif step_name == "sell":
                         success = self.find_and_remove_consumable_car(int(self.entry_sc.get()))
                 except Exception as e:
+                    import traceback
                     self.log(f"执行模块 {step_name} 时异常: {e}")
+                    self.log(f"[TRACEBACK]\n{traceback.format_exc()}")
                     success = False
 
                 if not self.is_running:
