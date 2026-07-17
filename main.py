@@ -397,25 +397,42 @@ class FH_UltimateBot(
             self.log(f"配置文件写入失败: {e}", level="ERROR")
 
     def save_config(self):
-        try:
-            self.config["race_count"] = int(self.entry_race.get())
-            self.config["buy_count"] = int(self.entry_car.get())
-            self.config["cj_count"] = int(self.entry_cj.get())
-            self.config["global_loops"] = int(self.entry_global_loop.get())
-            if hasattr(self, "entry_race_timeout"):
-                self.config["race_timeout"] = max(60, int(self.entry_race_timeout.get()))
-            self.config["share_code"] = "".join(c for c in self.entry_share.get() if c.isdigit())
-            if hasattr(self, "entry_sharecode_timeout"):
-                self.config["sharecode_timeout"] = max(1, int(self.entry_sharecode_timeout.get()))
-            self.config["next_1"] = int(self.entry_next1.get())
-            self.config["next_2"] = int(self.entry_next2.get())
-            self.config["next_3"] = int(self.entry_next3.get())
-            if hasattr(self, "entry_next4"):
-                self.config["next_4"] = int(self.entry_next4.get())
-            if hasattr(self, "entry_sc"):
-                self.config["sell_count"] = int(self.entry_sc.get())
-        except Exception as e:
-            self.log(f"保存配置时数值解析失败: {e}", level="WARN")
+        # 每个配置项独立 try/except，避免单项失败导致后续全部不保存
+        def _save_int(key, entry_widget, min_val=None, default=None):
+            try:
+                val = int(entry_widget.get())
+                if min_val is not None:
+                    val = max(min_val, val)
+                self.config[key] = val
+            except (ValueError, TypeError):
+                if default is not None and key not in self.config:
+                    self.config[key] = default
+
+        def _save_str(key, entry_widget, filter_digits=False):
+            try:
+                val = entry_widget.get()
+                if filter_digits:
+                    val = "".join(c for c in val if c.isdigit())
+                self.config[key] = val
+            except Exception:
+                pass
+
+        _save_int("race_count", self.entry_race)
+        _save_int("buy_count", self.entry_car)
+        _save_int("cj_count", self.entry_cj)
+        _save_int("global_loops", self.entry_global_loop)
+        if hasattr(self, "entry_race_timeout"):
+            _save_int("race_timeout", self.entry_race_timeout, min_val=60)
+        _save_str("share_code", self.entry_share, filter_digits=True)
+        if hasattr(self, "entry_sharecode_timeout"):
+            _save_int("sharecode_timeout", self.entry_sharecode_timeout, min_val=1, default=10)
+        _save_int("next_1", self.entry_next1)
+        _save_int("next_2", self.entry_next2)
+        _save_int("next_3", self.entry_next3)
+        if hasattr(self, "entry_next4"):
+            _save_int("next_4", self.entry_next4)
+        if hasattr(self, "entry_sc"):
+            _save_int("sell_count", self.entry_sc)
 
         self.config["chk_1"] = self.var_chk1.get()
         self.config["chk_2"] = self.var_chk2.get()
