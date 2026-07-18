@@ -33,16 +33,24 @@ jobs:
           python << 'PYEOF'
           import re, os, yaml, sys
 
+          gout = os.environ.get('GITHUB_OUTPUT', '')
+          def setout(key, val):
+              if gout:
+                  with open(gout, 'a', encoding='utf-8') as f:
+                      f.write(f'{key}={val}\n')
+              else:
+                  print(f'{key}={val}')
+
           # Read version from config.py
           with open('config.py', encoding='utf-8') as f:
               m = re.search(r'CURRENT_VERSION\s*=\s*["\'](.+?)["\']', f.read())
           version = m.group(1) if m else '0.0.0.0'
-          print(f'::set-output name=version::{version}')
+          setout('version', version)
 
           # Parse release note
           note_file = f'docs/v{version}.md'
           if not os.path.exists(note_file):
-              print('::set-output name=publish::false')
+              setout('publish', 'false')
               print(f'::notice::No release note at {note_file}, skipping release.')
               sys.exit(0)
 
@@ -56,14 +64,13 @@ jobs:
                   body = parts[2].strip()
                   publish = meta.get('publish', True)
                   prerelease = meta.get('prerelease', False)
-                  print(f'::set-output name=publish::{str(publish).lower()}')
-                  print(f'::set-output name=prerelease::{str(prerelease).lower()}')
-                  # Write body to file (multiline output is tricky in GITHUB_OUTPUT)
+                  setout('publish', str(publish).lower())
+                  setout('prerelease', str(prerelease).lower())
                   with open('release_body.md', 'w', encoding='utf-8') as bf:
                       bf.write(body)
                   sys.exit(0)
 
-          print('::set-output name=publish::false')
+          setout('publish', 'false')
           print(f'::notice::No valid frontmatter in {note_file}.')
           PYEOF
 
