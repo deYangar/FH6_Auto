@@ -665,9 +665,10 @@ class RaceMixin:
 
                 time.sleep(1.0)  # OCR 检测间隔 1 秒
 
-                # 卡死检测：90 秒未检测到比赛结果，尝试恢复
-                if now - race_start_time > 90:
-                    self.log("已 90 秒未检测到比赛结果，尝试按 ESC 检查主菜单...")
+                # 卡死检测：超过设定秒数未检测到比赛结果，尝试恢复
+                stuck_timeout = max(10, int(self.config.get("stuck_timeout", 60)))
+                if now - race_start_time > stuck_timeout:
+                    self.log(f"已 {stuck_timeout} 秒未检测到比赛结果，尝试按 ESC 检查主菜单...")
                     self.hw_key_up("w")
                     self.hw_key_up("up")
                     driving_keys_held = False

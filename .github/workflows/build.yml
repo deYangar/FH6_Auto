@@ -1,0 +1,135 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Read version from config.py
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(python -c "import re; print(re.search(r'CURRENT_VERSION\s*=\s*[\"'](.+?)[\"']', open('config.py', encoding='utf-8').read()).group(1))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Build Steam version (FH6Auto.exe)
+        run: |
+          python -m PyInstaller -n "FH6Auto" -F -w --uac-admin --noupx main.py `
+            --icon=assets/icon.ico `
+            --add-data "images;images" `
+            --add-data "assets;assets" `
+            --add-data "onnx_models;onnx_models" `
+            --hidden-import yaml `
+            --hidden-import onnxruntime `
+            --noconfirm
+
+      - name: Build Xbox version (FH6Auto_xbox.exe)
+        shell: pwsh
+        run: |
+          # Backup steam files
+          Copy-Item input_handler.py input_handler_steam_bak.py -Force
+          Copy-Item race_logic.py race_logic_steam_bak.py -Force
+          # Swap in xbox files
+          Copy-Item input_handler_xbox.py input_handler.py -Force
+          Copy-Item race_logic_xbox.py race_logic.py -Force
+          # Build
+          python -m PyInstaller -n "FH6Auto_xbox" -F -w --uac-admin --noupx main.py `
+            --icon=assets/icon.ico `
+            --add-data "images;images" `
+            --add-data "assets;assets" `
+            --add-data "onnx_models;onnx_models" `
+            --hidden-import yaml `
+            --hidden-import onnxruntime `
+            --noconfirm
+          # Restore steam files
+          Copy-Item input_handler_steam_bak.py input_handler.py -Force
+          Copy-Item race_logic_steam_bak.py race_logic.py -Force
+          Remove-Item input_handler_steam_bak.py, race_logic_steam_bak.py -Force
+
+      - name: Parse release note
+        id: release
+        shell: bash
+        run: |
+          python -c "
+          import os, yaml, sys
+          version = '${{ steps.version.outputs.version }}'
+          note_file = f'docs/v{version}.md'
+          if not os.path.exists(note_file):
+              print('::set-output name=publish::false')
+              print('::notice::No release note found at {note_file}, skipping release.')
+              sys.exit(0)
+          with open(note_file, encoding='utf-8') as f:
+              content = f.read()
+          # Parse frontmatter
+          if content.startswith('---'):
+              parts = content.split('---', 2)
+              if len(parts) >= 3:
+                  meta = yaml.safe_load(parts[1])
+                  body = parts[2].strip()
+                  publish = meta.get('publish', True)
+                  prerelease = meta.get('prerelease', False)
+                  print(f'::set-output name=publish::{str(publish).lower()}')
+                  print(f'::set-output name=prerelease::{str(prerelease).lower()}')
+                  print(f'::set-output name=body::{body}')
+                  sys.exit(0)
+          print('::set-output name=publish::false')
+          print('::notice::No valid frontmatter in {note_file}.'
+          "
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FH6Auto-binaries
+          path: |
+            dist/FH6Auto.exe
+            dist/FH6Auto_xbox.exe
+
+      - name: Create GitHub Release
+        if: steps.release.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+          PRERELEASE="${{ steps.release.outputs.prerelease }}"
+          # Write body to temp file
+          python -c "
+          import os
+          body = '''${{ steps.release.outputs.body }}'''
+          with open('release_body.md', 'w', encoding='utf-8') as f:
+              f.write(body)
+          "
+          ARGS=""
+          if [ "$PRERELEASE" = "true" ]; then
+            ARGS="--prerelease"
+          fi
+          gh release create "$TAG" \
+            dist/FH6Auto.exe \
+            dist/FH6Auto_xbox.exe \
+            --title "v$VERSION" \
+            --notes-file release_body.md \
+            $ARGS \
+            --target main

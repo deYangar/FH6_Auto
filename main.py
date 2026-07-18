@@ -325,7 +325,8 @@ class FH_UltimateBot(
             "share_code": "103435586",
             "auto_restart": False,
             "restart_cmd": "start steam://run/2483190",
-            "race_timeout": 300,
+            "race_timeout": 600,
+            "stuck_timeout": 60,
             "debug_screenshots": False,
             "focus_hook_enabled": False,
             "cj_mode": 2,
@@ -421,8 +422,9 @@ class FH_UltimateBot(
         _save_int("buy_count", self.entry_car)
         _save_int("cj_count", self.entry_cj)
         _save_int("global_loops", self.entry_global_loop)
-        if hasattr(self, "entry_race_timeout"):
-            _save_int("race_timeout", self.entry_race_timeout, min_val=60)
+
+        if hasattr(self, "entry_stuck_timeout"):
+            _save_int("stuck_timeout", self.entry_stuck_timeout, min_val=10, default=60)
         _save_str("share_code", self.entry_share, filter_digits=True)
         if hasattr(self, "entry_sharecode_timeout"):
             _save_int("sharecode_timeout", self.entry_sharecode_timeout, min_val=1, default=10)
@@ -440,7 +442,7 @@ class FH_UltimateBot(
         if hasattr(self, "var_chk4"):
             self.config["chk_4"] = self.var_chk4.get()
         self.config["auto_restart"] = self.var_auto_restart.get()
-        self.config["debug_screenshots"] = self.var_debug_screenshots.get()
+        self.config["debug_screenshots"] = self.var_debug_mode.get()
         self.config["focus_hook_enabled"] = self.var_focus_hook.get()
         self.config["use_directml"] = self.var_directml.get()
         self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
@@ -451,8 +453,8 @@ class FH_UltimateBot(
             self.config["auto_close_game"] = self.var_auto_close.get()
         if hasattr(self, "var_auto_shutdown"):
             self.config["auto_shutdown"] = self.var_auto_shutdown.get()
-        if hasattr(self, "var_diagnostic_mode"):
-            self.config["diagnostic_mode"] = self.var_diagnostic_mode.get()
+        if hasattr(self, "var_debug_mode"):
+            self.config["diagnostic_mode"] = self.var_debug_mode.get()
         # 同步当前方案
         self._sync_to_current_scheme()
         try:
@@ -742,6 +744,13 @@ class FH_UltimateBot(
 
     def is_focus_hook_enabled(self):
         return bool(self.config.get("focus_hook_enabled", False))
+
+    def on_debug_mode_toggle(self):
+        self.save_config()
+        if self.var_debug_mode.get():
+            self.log("调试模式已开启：调试截图 + 诊断模式")
+        else:
+            self.log("调试模式已关闭")
 
     def on_focus_hook_toggle(self):
         self.save_config()
@@ -1121,21 +1130,16 @@ class FH_UltimateBot(
         self.entry_global_loop = ctk.CTkEntry(self.global_settings_frame, width=62, height=28, justify="center", corner_radius=6)
         self.entry_global_loop.insert(0, str(self.config.get("global_loops", 10)))
         self.entry_global_loop.pack(side="left", padx=(0, 16))
-        ctk.CTkLabel(self.global_settings_frame, text="单局超时:").pack(side="left", padx=(0, 5))
-        self.entry_race_timeout = ctk.CTkEntry(self.global_settings_frame, width=68, height=28, justify="center", corner_radius=6)
-        self.entry_race_timeout.insert(0, str(self.config.get("race_timeout", 300)))
-        self.entry_race_timeout.pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(self.global_settings_frame, text="单局跑图超时检测:").pack(side="left", padx=(0, 5))
+        self.entry_stuck_timeout = ctk.CTkEntry(self.global_settings_frame, width=68, height=28, justify="center", corner_radius=6)
+        self.entry_stuck_timeout.insert(0, str(self.config.get("stuck_timeout", 60)))
+        self.entry_stuck_timeout.pack(side="left", padx=(0, 16))
+        self.entry_stuck_timeout.bind("<FocusOut>", lambda e: self.save_config())
+        self.entry_stuck_timeout.bind("<Return>", lambda e: self.save_config())
         self.var_auto_restart = ctk.BooleanVar(value=self.config.get("auto_restart", True))
         self.cb_auto_restart = ctk.CTkCheckBox(self.global_settings_frame, text="闪退自动重启", variable=self.var_auto_restart)
         self.cb_auto_restart.pack(side="left", padx=(4, 12))
-        self.var_debug_screenshots = ctk.BooleanVar(value=self.config.get("debug_screenshots", False))
-        self.cb_debug_screenshots = ctk.CTkCheckBox(
-            self.global_settings_frame,
-            text="调试截图",
-            variable=self.var_debug_screenshots,
-            command=self.save_config,
-        )
-        self.cb_debug_screenshots.pack(side="left", padx=(0, 12))
+
         self.var_focus_hook = ctk.BooleanVar(value=self.config.get("focus_hook_enabled", False))
         self.cb_focus_hook = ctk.CTkCheckBox(
             self.global_settings_frame,
@@ -1161,15 +1165,15 @@ class FH_UltimateBot(
             command=self.save_config,
         )
         self.cb_auto_shutdown.pack(side="left", padx=(0, 16))
-        # ====== 诊断模式 ======
-        self.var_diagnostic_mode = ctk.BooleanVar(value=self.config.get("diagnostic_mode", False))
-        self.cb_diagnostic_mode = ctk.CTkCheckBox(
+        # ====== 调试模式（调试截图 + 诊断模式合一） ======
+        self.var_debug_mode = ctk.BooleanVar(value=self.config.get("debug_screenshots", False) or self.config.get("diagnostic_mode", False))
+        self.cb_debug_mode = ctk.CTkCheckBox(
             self.global_settings_frame,
-            text="诊断模式",
-            variable=self.var_diagnostic_mode,
-            command=self.save_config,
+            text="调试模式",
+            variable=self.var_debug_mode,
+            command=self.on_debug_mode_toggle,
         )
-        self.cb_diagnostic_mode.pack(side="left", padx=(0, 16))
+        self.cb_debug_mode.pack(side="left", padx=(0, 12))
         ctk.CTkLabel(self.global_settings_frame, text="启动命令:").pack(side="left", padx=(0, 5))
         self.le_restart_cmd = ctk.CTkEntry(self.global_settings_frame, height=28, corner_radius=6)
         self.le_restart_cmd.insert(0, self.config.get("restart_cmd", "start steam://run/2483190"))
