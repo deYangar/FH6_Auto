@@ -40,12 +40,14 @@
 - 可新建/删除/重命名方案
 
 ### 循环跑图（EventLab 新流程）
-- 选车检测（drivingtag）→ ESC 退回主菜单 → EventLab → 搜索蓝图分享码 → 自动开始比赛
+- **固定按键导航选车**: Y → Enter → 35×down → Enter → 19×down → Enter → ESC → Enter，替代纯图片匹配
+- **OCR 上车检测**: 中心区域（558×287 居中矩形比例）识别"上车"文字，有则 Enter 上车，无则车辆已在驾驶
+- ESC 退回主菜单 → EventLab → 搜索蓝图分享码 → 自动开始比赛
 - **OCR 完赛检测**: 截取画面底部 1/5，rec 模型识别按钮文字
   - 成功画面: `Esc重试 Enter继续` → OCR 识别"继续"/"退出"判定场景
   - 失败画面: `Esc退出 Enter重试`
   - 非末轮按"重试"对应键，末轮按"退出"/"继续"对应键
-  - 检测到 stuck（90s 无结果）→ ESC → 主菜单 → 重新走 EventLab 流程
+  - 检测到 stuck（可自定义超时）→ ESC → 主菜单 → 重新走 EventLab 流程
 - 按键后等待验证，防止按键未生效
 
 ### 批量买车
@@ -55,6 +57,8 @@
 
 ### 自动卖车(移除消耗品车辆)
 - 自动进入车辆收藏 → 购买与出售
+- **固定按键导航筛选**: Y → 7×down → Enter → 10×down → Enter → 32×down → Enter → 5×down → Enter → ESC，替代图片匹配筛选
+- **OCR 上车检测**: 驾驶收藏车时用 OCR 识别"上车"文字替代 `rc.png` 图片匹配
 - 识别并移除已消耗的车辆(`removecarobject.png` + `removecar.png`)
 - 多页翻页查找
 - 移除确认自动点击,失败自动 ESC 跳过
@@ -182,6 +186,31 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 ---
 
 ## 更新日志
+
+### v1.2.8.0 (2026-07-19)
+
+**🚗 跑图选车改为固定按键导航 + OCR**
+- 用固定按键序列（Y → Enter → 35×down → Enter → 19×down → Enter → ESC → Enter）替代纯图片匹配选车
+- OCR 在中心区域检测"上车"文字，有则 Enter 上车，无则车辆已在驾驶按 ESC
+- 删除 `wait_for_skill_car_strict` 四重验证、`skillcarbrand.png` 品牌搜索、翻页找车、`drivingtag.png` 检测等全部图片匹配逻辑
+
+**🗑️ 删除车辆筛选改为固定按键导航**
+- 用固定按键序列（Y → 7×down → Enter → 10×down → Enter → 32×down → Enter → 5×down → Enter → ESC）替代 `repitem.png` + `CCbrand.png` 图片匹配筛选
+- 删除车辆上车检测从 `rc.png` 图片匹配改为 OCR 检测"上车"
+- 删除 `brand_retry_done` 品牌重试循环，筛选后直接逐车删除
+
+### v1.2.7.0 (2026-07-17)
+
+**✨ 新增**
+- **单局跑图超时检测**: 原硬编码 90 秒卡死超时改为可自定义，默认 600 秒，保存在 config.json
+- **GitHub Actions CI/CD**: 推送到 main 自动编译 Steam + Xbox 两个版本，通过 `docs/` 中的 release note 控制是否发布 Release
+
+**🔧 改进**
+- 调试模式合并：原"调试截图"和"诊断模式"合并为一个"调试模式"开关
+
+**🐛 修复**
+- 修复 OCR 完赛检测在 onnxruntime CPU 后端的 UTF-8 解码异常
+- 修复超级抽奖重新选品牌后 `brand_retry_done` 未初始化导致的卡死
 
 ### v1.2.6.0 (2026-07-17)
 
