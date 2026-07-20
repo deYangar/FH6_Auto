@@ -416,16 +416,6 @@ class CJMixin:
                     self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
                     self.hw_press("enter")
                     time.sleep(1.0)
-                # 品牌进入车辆列表后，往下滚4次确保看到车辆
-                self.log("[DownScroll] start")
-                time.sleep(0.7)
-                for _dn in range(4):
-                    if not self.is_running:
-                        return False
-                    self.log(f"[DownScroll] {_dn+1}/4")
-                    self.hw_press("down", delay=0.5, use_send=True)
-                    time.sleep(1.0)
-                self.log("[DownScroll] done")
                 jump_pages = max(0, self.memory_car_page - 1)
 
                 if jump_pages > 0:
