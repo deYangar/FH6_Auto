@@ -102,9 +102,10 @@ def get_img_path(filename):
         scheme_path = os.path.join(APP_DIR, "images", _current_scheme_dir, basename)
         if os.path.exists(scheme_path):
             return scheme_path
-    ext_path = os.path.join(APP_DIR, "images", basename)
-    if os.path.exists(ext_path):
-        return ext_path
+    else:
+        ext_path = os.path.join(APP_DIR, "images", basename)
+        if os.path.exists(ext_path):
+            return ext_path
     int_path = os.path.join(INTERNAL_DIR, "images", basename)
     if os.path.exists(int_path):
         return int_path

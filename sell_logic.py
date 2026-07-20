@@ -63,43 +63,26 @@ class SellMixin:
         self.move_to_game_coord(5, 5)
         time.sleep(0.2)
 
-        # ====== 上车检测：方案1 用 rc.png 图片匹配，方案2 用 OCR ======
-        _scheme_idx = self.config.get("current_scheme", 0)
-        self.log(f"当前方案: {_scheme_idx + 1}，使用{'OCR' if _scheme_idx == 1 else 'rc.png'}上车检测")
-
-        if _scheme_idx == 1:
-            # ====== 方案2: OCR 检测"上车" ======
-            ocr_engine = self.get_ocr_engine()
-            img = self.capture_region(self.regions["全界面"])
-            text = ""
-            if img is not None and ocr_engine:
-                text = ocr_engine.detect_text_in_region(img, {
-                    "y_start": 0.34,
-                    "y_end": 0.66,
-                    "x_start": 0.325,
-                    "x_end": 0.675,
-                })
-            if "上车" in text:
-                self.log(f"OCR 识别到'上车'，按 Enter 上车 (text={text})")
-                self.hw_press("enter")
-                time.sleep(2.0)
-            else:
-                self.log(f"OCR 未识别到'上车'，车辆已在驾驶 (text={text})")
-                self.hw_press("esc")
-                time.sleep(1.5)
-                self.hw_press("esc")
+        # ====== 上车检测：OCR 中心区域检测"上车" ======
+        ocr_engine = self.get_ocr_engine()
+        img = self.capture_region(self.regions["全界面"])
+        text = ""
+        if img is not None and ocr_engine:
+            text = ocr_engine.detect_text_in_region(img, {
+                "y_start": 0.34,
+                "y_end": 0.66,
+                "x_start": 0.325,
+                "x_end": 0.675,
+            })
+        if "上车" in text:
+            self.log(f"OCR 识别到'上车'，按 Enter 上车 (text={text})")
+            self.hw_press("enter")
+            time.sleep(2.0)
         else:
-            # ====== 方案1: 旧版 rc.png 图片匹配 ======
-            pos_rc = self.wait_for_image("rc.png", region=self.regions["全界面"], threshold=0.65, timeout=2, interval=0.2, fast_mode=True)
-            if pos_rc:
-                self.log("找到上车按钮，执行点击")
-                self.game_click(pos_rc)
-                time.sleep(2.0)
-            else:
-                self.log("该车辆已经驾驶，或未找到上车按钮，按两次ESC退回")
-                self.hw_press("esc")
-                time.sleep(1.5)
-                self.hw_press("esc")
+            self.log(f"OCR 未识别到'上车'，车辆已在驾驶 (text={text})")
+            self.hw_press("esc")
+            time.sleep(1.5)
+            self.hw_press("esc")
         time.sleep(2.0)
 
         # 等待购买与出售界面出现
@@ -127,301 +110,116 @@ class SellMixin:
             self.log("30次内未找到购买与出售")
             return False
 
-        # ====== 筛选找车：方案1 用图片匹配，方案2 用固定按键导航 ======
+        # ====== 筛选找车：固定按键导航 ======
         _scheme_idx = self.config.get("current_scheme", 0)
-        self.log(f"当前方案: {_scheme_idx + 1}，使用{'固定按键导航' if _scheme_idx == 1 else '图片匹配'}筛选")
+        self.log(f"当前方案: {_scheme_idx + 1}，使用固定按键导航筛选")
+
+        self.hw_press("y")
+        time.sleep(1.0)
 
         if _scheme_idx == 1:
-            # ====== 方案2: 固定按键导航筛选 ======
-            self.log("使用固定按键导航筛选删除目标...")
-            self.hw_press("y")
-            time.sleep(1.0)
-            for _ in range(7):
-                if not self.is_running:
-                    return False
-                self.hw_press("down", delay=0.1)
-                time.sleep(0.1)
-            self.hw_press("enter")
-            time.sleep(0.8)
-            for _ in range(10):
-                if not self.is_running:
-                    return False
-                self.hw_press("down", delay=0.1)
-                time.sleep(0.1)
-            self.hw_press("enter")
-            time.sleep(0.8)
-            for _ in range(32):
-                if not self.is_running:
-                    return False
-                self.hw_press("down", delay=0.1)
-                time.sleep(0.1)
-            self.hw_press("enter")
-            time.sleep(0.8)
-            for _ in range(5):
-                if not self.is_running:
-                    return False
-                self.hw_press("down", delay=0.1)
-                time.sleep(0.1)
-            self.hw_press("enter")
-            time.sleep(0.8)
-            self.hw_press("esc")
-            time.sleep(1.0)
-            self.log("筛选完成，当前页面车辆均为方案2删除目标")
+            # 方案2: down×7 -> down×10 -> down×32 -> down×5
+            down_groups = [7, 10, 32, 5]
+        else:
+            # 方案1: down×2 -> down×6 -> down×14 -> down×28
+            down_groups = [2, 6, 14, 28]
 
-            # 逐车删除
+        for count in down_groups:
+            for _ in range(count):
+                if not self.is_running:
+                    return False
+                self.hw_press("down", delay=0.1)
+                time.sleep(0.1)
+            self.hw_press("enter")
+            time.sleep(0.8)
+
+        self.hw_press("esc")
+        time.sleep(1.0)
+        self.log("筛选完成")
+
+        # 逐车删除
+        not_found_pages = 0
+        while self.sc_count < target_count:
+            if not self.is_running:
+                return False
+            self.log(f"正在扫描当前页面... (连续未找到: {not_found_pages}/10)")
+
+            pos_target = self.wait_for_image_ultimate_safe(
+                main_path="removecarobject.png",
+                anti_path="newcartag.png",
+                region=self.regions["全界面"],
+                main_threshold=0.77,
+                anti_threshold=0.65,
+                timeout=1.0,
+                interval=0.2
+            )
+
+            if pos_target:
+                self.detail_state_confirmed = True
+
+            if not pos_target:
+                not_found_pages += 1
+                if not_found_pages >= 10:
+                    self.log("连续 10 页未找到目标车辆，车辆已全部清理完毕。")
+                    break
+                self.log(f"当前页面未找到，向右翻页寻找... (第 {not_found_pages} 次翻页)")
+                for _ in range(4):
+                    self.hw_press("right", delay=0.06)
+                    time.sleep(0.1)
+                time.sleep(0.4)
+                continue
+
             not_found_pages = 0
-            while self.sc_count < target_count:
-                if not self.is_running:
-                    return False
-                self.log(f"正在扫描当前页面... (连续未找到: {not_found_pages}/10)")
+            self.log("锁定目标车辆，执行点击...")
+            self.game_click(pos_target)
+            time.sleep(0.8)
 
-                pos_target = self.wait_for_image_ultimate_safe(
-                    main_path="removecarobject.png",
-                    anti_path="newcartag.png",
-                    region=self.regions["全界面"],
-                    main_threshold=0.77,
-                    anti_threshold=0.65,
-                    timeout=1.0,
-                    interval=0.2
-                )
+            self.log("寻找 '从车库移除' 按钮...")
+            pos_remove = self.wait_for_image_gray(
+                "removecar.png",
+                region=self.regions["中间"],
+                threshold=0.70,
+                timeout=1.5,
+                interval=0.3,
+                fast_mode=True
+            )
 
-                if pos_target:
-                    self.detail_state_confirmed = True
-
-                if not pos_target:
-                    not_found_pages += 1
-                    if not_found_pages >= 10:
-                        self.log("连续 10 页未找到目标车辆，车辆已全部清理完毕。")
-                        break
-                    self.log(f"当前页面未找到，向右翻页寻找... (第 {not_found_pages} 次翻页)")
-                    for _ in range(4):
-                        self.hw_press("right", delay=0.06)
-                        time.sleep(0.1)
-                    time.sleep(0.4)
-                    continue
-
-                not_found_pages = 0
-                self.log("锁定目标车辆，执行点击...")
-                self.game_click(pos_target)
+            if pos_remove:
+                self.log("直接找到移除按钮，点击...")
+                self.game_click(pos_remove)
+            else:
+                self.log("未直接找到移除按钮，按下 Enter 呼出菜单...")
+                self.hw_press("enter")
                 time.sleep(0.8)
-
-                self.log("寻找 '从车库移除' 按钮...")
                 pos_remove = self.wait_for_image_gray(
                     "removecar.png",
                     region=self.regions["中间"],
-                    threshold=0.70,
+                    threshold=0.75,
                     timeout=1.5,
                     interval=0.3,
                     fast_mode=True
                 )
-
                 if pos_remove:
-                    self.log("直接找到移除按钮，点击...")
+                    self.log("呼出菜单后找到移除按钮，点击...")
                     self.game_click(pos_remove)
                 else:
-                    self.log("未直接找到移除按钮，按下 Enter 呼出菜单...")
-                    self.hw_press("enter")
-                    time.sleep(0.8)
-                    pos_remove = self.wait_for_image_gray(
-                        "removecar.png",
-                        region=self.regions["中间"],
-                        threshold=0.75,
-                        timeout=1.5,
-                        interval=0.3,
-                        fast_mode=True
-                    )
-                    if pos_remove:
-                        self.log("呼出菜单后找到移除按钮，点击...")
-                        self.game_click(pos_remove)
-                    else:
-                        self.log("仍未找到移除按钮，可能点错了/该车无法移除，按 ESC 放弃该车...")
-                        self.hw_press("esc")
-                        time.sleep(1.0)
-                        self.hw_press("right")
-                        time.sleep(1.2)
-                        continue
-
-                time.sleep(0.8)
-                self.log("确认移除...")
-                self.hw_press("down")
-                time.sleep(0.3)
-                self.hw_press("enter")
-                time.sleep(1.2)
-
-                self.sc_count += 1
-                self.update_running_ui("移除车辆", self.sc_count, target_count)
-                self.log(f"成功移除车辆！当前进度: {self.sc_count}/{target_count}")
-        else:
-            # ====== 方案1: 旧版图片匹配筛选 ======
-            # 筛选：按 Y 打开筛选面板
-            self.hw_press("y")
-            time.sleep(1.0)
-
-            pos_repitem = self.wait_for_image_gray(
-                "repitem.png",
-                region=self.regions["中间"],
-                threshold=0.70,
-                timeout=1,
-                interval=0.3,
-                fast_mode=True
-            )
-            if not pos_repitem:
-                self.log("未识别到筛选选项(repitem.png)")
-                return False
-
-            self.game_click(pos_repitem)
-            time.sleep(0.8)
-            self.hw_press("esc")
-            time.sleep(1.0)
-
-            # ====== 选品牌 + 翻页找车（最多重试 1 次）======
-            brand_retry_done = False
-
-            while True:
-                # 切换到消耗品品牌
-                self.log("切换到消耗品品牌...")
-                self.hw_press("backspace")
-                brand_pos = None
-                for _ in range(5):
-                    if not self.is_running:
-                        return False
-                    brand_pos = self.wait_for_any_image_gray(
-                        ["CCbrand.png"],
-                        region=self.regions["全界面"],
-                        threshold=0.75,
-                        timeout=0.8,
-                        interval=0.2,
-                        fast_mode=True
-                    )
-                    if brand_pos:
-                        break
-                    self.hw_press("up")
-                    time.sleep(0.25)
-
-                if not brand_pos:
-                    self.log("未找到品牌")
-                    return False
-
-                self.game_click(brand_pos)
-                time.sleep(0.8)
-
-                # 品牌重确认
-                for retry in range(3):
-                    if not self.is_running:
-                        return False
-                    still_brand = self.find_image_gray(
-                        "CCbrand.png",
-                        region=self.regions["全界面"],
-                        threshold=0.75,
-                        fast_mode=True
-                    )
-                    if not still_brand:
-                        break
-                    self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
-                    self.hw_press("enter")
+                    self.log("仍未找到移除按钮，可能点错了/该车无法移除，按 ESC 放弃该车...")
+                    self.hw_press("esc")
                     time.sleep(1.0)
-
-                self.log("开始删除消耗品车辆...")
-
-                not_found_pages = 0
-                should_retry_brand = False
-
-                while self.sc_count < target_count:
-                    if not self.is_running:
-                        return False
-                    self.log(f"正在严格扫描当前页面... (连续未找到: {not_found_pages}/10)")
-
-                    pos_target = self.wait_for_image_ultimate_safe(
-                        main_path="removecarobject.png",
-                        anti_path="newcartag.png",
-                        region=self.regions["全界面"],
-                        main_threshold=0.77,
-                        anti_threshold=0.65,
-                        timeout=1.0,
-                        interval=0.2
-                    )
-
-                    if pos_target:
-                        self.detail_state_confirmed = True
-
-                    if not pos_target:
-                        not_found_pages += 1
-                        if not_found_pages >= 10:
-                            if not brand_retry_done:
-                                self.log("连续翻找 10 页未找到目标车辆，重新进入选品牌重试...")
-                                brand_retry_done = True
-                                should_retry_brand = True
-                                break
-                            else:
-                                self.log("重新选品牌后仍连续 10 页未找到，车辆已全部清理完毕。")
-                                self.log("主动结束清理任务，准备进入下一步骤...")
-                                break
-
-                        self.log(f"当前页面未找到，向右翻页寻找... (第 {not_found_pages} 次翻页)")
-                        for _ in range(4):
-                            self.hw_press("right", delay=0.06)
-                            time.sleep(0.1)
-                        time.sleep(0.4)
-                        continue
-
-                    not_found_pages = 0
-
-                    self.log("锁定目标车辆，执行点击...")
-                    self.game_click(pos_target)
-                    time.sleep(0.8)
-
-                    self.log("寻找 '从车库移除' 按钮...")
-                    pos_remove = self.wait_for_image_gray(
-                        "removecar.png",
-                        region=self.regions["中间"],
-                        threshold=0.70,
-                        timeout=1.5,
-                        interval=0.3,
-                        fast_mode=True
-                    )
-
-                    if pos_remove:
-                        self.log("直接找到移除按钮，点击...")
-                        self.game_click(pos_remove)
-                    else:
-                        self.log("未直接找到移除按钮，按下 Enter 呼出菜单...")
-                        self.hw_press("enter")
-                        time.sleep(0.8)
-
-                        pos_remove = self.wait_for_image_gray(
-                            "removecar.png",
-                            region=self.regions["中间"],
-                            threshold=0.75,
-                            timeout=1.5,
-                            interval=0.3,
-                            fast_mode=True
-                        )
-                        if pos_remove:
-                            self.log("呼出菜单后找到移除按钮，点击...")
-                            self.game_click(pos_remove)
-                        else:
-                            self.log("仍未找到移除按钮，可能点错了/该车无法移除，按 ESC 放弃该车...")
-                            self.hw_press("esc")
-                            time.sleep(1.0)
-                            self.hw_press("right")
-                            time.sleep(1.2)
-                            continue
-
-                    time.sleep(0.8)
-                    self.log("确认移除...")
-                    self.hw_press("down")
-                    time.sleep(0.3)
-                    self.hw_press("enter")
+                    self.hw_press("right")
                     time.sleep(1.2)
+                    continue
 
-                    self.sc_count += 1
-                    self.update_running_ui("移除车辆", self.sc_count, target_count)
-                    self.log(f"成功移除车辆！当前进度: {self.sc_count}/{target_count}")
+            time.sleep(0.8)
+            self.log("确认移除...")
+            self.hw_press("down")
+            time.sleep(0.3)
+            self.hw_press("enter")
+            time.sleep(1.2)
 
-                    brand_retry_done = False
-
-                if not should_retry_brand:
-                    break
+            self.sc_count += 1
+            self.update_running_ui("移除车辆", self.sc_count, target_count)
+            self.log(f"成功移除车辆！当前进度: {self.sc_count}/{target_count}")
 
         # 退回上一级
         for _ in range(3):

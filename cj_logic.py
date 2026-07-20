@@ -185,13 +185,13 @@ class CJMixin:
             # 严格识别阶段是在点击/hover 前完成的，可信度最高；点击后选中框会改变局部外观，
             # 不能用 hover 后的小区域匹配反过来否定前面的高置信等级标签。
             if strict_class_score >= threshold:
-                _cls_img = self.config.get("class_image", "classB600.png")
+                _cls_img = self.config.get("class_image", "classS2829.png")
                 self.log(f"[Safety] 使用严格识别阶段 {_cls_img} 分数通过二次校验: {strict_class_score:.3f} >= {threshold:.2f}")
                 return True
 
             x, y = int(pos_target[0]), int(pos_target[1])
             region = (max(0, x - 160), max(0, y - 100), 320, 200)
-            _cls_img = self.config.get("class_image", "classB600.png")
+            _cls_img = self.config.get("class_image", "classS2829.png")
             pos = self.find_image_gray(_cls_img, region=region, threshold=threshold, fast_mode=False)
             if pos:
                 return True
@@ -416,6 +416,16 @@ class CJMixin:
                     self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
                     self.hw_press("enter")
                     time.sleep(1.0)
+                # 品牌进入车辆列表后，往下滚4次确保看到车辆
+                self.log(f"[DownScroll] current_scheme={self.config.get('current_scheme', '?')}, 开始下滚4次")
+                time.sleep(0.7)
+                for _dn in range(4):
+                    if not self.is_running:
+                        return False
+                    self.log(f"[DownScroll] 第 {_dn+1}/4 次下滚")
+                    self.hw_press("down", delay=0.3)
+                    time.sleep(0.8)
+                self.log("[DownScroll] 下滚完成")
                 jump_pages = max(0, self.memory_car_page - 1)
 
                 if jump_pages > 0:

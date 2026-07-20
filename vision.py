@@ -402,6 +402,34 @@ class VisionMixin:
         except Exception:
             return None, actual_path
 
+    def _sort_column_first(self, points, x_idx=0, y_idx=1, tolerance=50):
+        """按列优先排序：先从上到下扫第一列，再第二列，以此类推。
+        x 坐标在 tolerance 范围内视为同一列。
+        """
+        if not points:
+            return points
+        sorted_by_x = sorted(points, key=lambda p: p[x_idx])
+        columns = []
+        current_col = []
+        col_x = None
+        for p in sorted_by_x:
+            px = p[x_idx]
+            if col_x is None or abs(px - col_x) <= tolerance:
+                current_col.append(p)
+                if col_x is None:
+                    col_x = px
+            else:
+                columns.append(current_col)
+                current_col = [p]
+                col_x = px
+        if current_col:
+            columns.append(current_col)
+        result = []
+        for col in columns:
+            col.sort(key=lambda p: p[y_idx])
+            result.extend(col)
+        return result
+
     def find_image_in_screen(self, screen_bgr, template_path, region=None, threshold=0.75, fast_mode=True):
         try:
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
@@ -642,6 +670,7 @@ class VisionMixin:
                 raw_pts = [(int(x), int(y), w_m, h_m, float(res_main[y, x])) for x, y in zip(*loc[::-1])]
                 # IoU NMS 去重（按分数降序，替代原始网格去重）
                 points = self._nms_iou(raw_pts, iou_threshold=0.3)
+                points = self._sort_column_first(points, x_idx=0, y_idx=1, tolerance=50)
 
                 for x, y, _, _, base_score in points:
 
@@ -749,7 +778,7 @@ class VisionMixin:
             CLS_REL_X_RATIO = 192.0 / 265.0
             CLS_REL_Y_RATIO = 169.0 / 198.0
 
-            _cls_img = self.config.get("class_image", "classB600.png")
+            _cls_img = self.config.get("class_image", "classS2829.png")
 
             # === Step 0: 预计算所有 scaled template + mask ===
             scale_data = {}
@@ -1904,7 +1933,7 @@ class VisionMixin:
 
             # 等级标签反向校验：skill car 不应显示等级标签橙色条
             # 等级标签反向校验：skill car 不应显示目标等级标签
-            _cls_img = "anti_class_b600.png"  # 独立模板，不与方案 class_image 混用
+            _cls_img = "anti_class_S2829.png"  # 独立模板，不与方案 class_image 混用
             CLS_ANTI_THRESHOLD = 0.70
             CLS_Y_MIN_RATIO = 0.50      # 等级标签搜索区域：车卡下半部分
 
@@ -1983,7 +2012,7 @@ class VisionMixin:
             )
 
             best_candidate = None
-            best_candidate_score = 0.0
+            all_valid_candidates = []
 
             for scale, candidates in parallel_results:
                 sd = scale_data[scale]
@@ -2031,12 +2060,11 @@ class VisionMixin:
                         )
                         continue
 
-                    # --- 反向校验：如果车卡底部匹配到当前方案等级标签，说明是别的车 ---
+                    # --- 反向校验 ---
                     cls_anti_tpl = sd['cls_anti_tpl']
                     h_ca, w_ca = sd['h_ca'], sd['w_ca']
                     cls_anti_score = 0.0
                     if cls_anti_tpl is not None and h_ca >= 8 and w_ca >= 20:
-                        # 搜索区域：当前卡片底部，x方向不扩展（防止扫到相邻卡片）
                         cls_bottom_y = max(0, car_y + sd['cls_y_start'])
                         cls_bottom_y2 = min(screen_bgr.shape[0], car_y + h_m + h_ca)
                         cls_x1 = max(0, car_x)
@@ -2075,16 +2103,17 @@ class VisionMixin:
                         f"scale={scale:.3f}"
                     )
 
-                    if effective_score > best_candidate_score:
-                        best_candidate_score = effective_score
-                        off_x = region[0] if region else 0
-                        off_y = region[1] if region else 0
-                        click_x = car_x + w_m // 2 + off_x
-                        click_y = car_y + h_m // 2 + off_y
-                        best_candidate = (click_x, click_y)
+                    off_x = region[0] if region else 0
+                    off_y = region[1] if region else 0
+                    click_x = car_x + w_m // 2 + off_x
+                    click_y = car_y + h_m // 2 + off_y
+                    all_valid_candidates.append((click_x, click_y, effective_score))
 
-            if best_candidate:
-                self.log(f"[SkillCarStrict] 最终选中: score={best_candidate_score:.3f}")
+            # 按列优先排序，取第一个
+            if all_valid_candidates:
+                all_valid_candidates = self._sort_column_first(all_valid_candidates, x_idx=0, y_idx=1, tolerance=50)
+                best_candidate = (all_valid_candidates[0][0], all_valid_candidates[0][1])
+                self.log(f"[SkillCarStrict] 最终选中: pos={best_candidate} (列优先排序，共 {len(all_valid_candidates)} 个候选)")
             return best_candidate
 
         except Exception as e:

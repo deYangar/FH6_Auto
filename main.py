@@ -310,7 +310,7 @@ class FH_UltimateBot(
         self.config = {
             "current_scheme": 0,
             "schemes": [],
-            "class_image": "classB600.png",
+            "class_image": "classS2829.png",
             "race_count": 99,
             "buy_count": 30,
             "cj_count": 30,
@@ -319,10 +319,10 @@ class FH_UltimateBot(
             "chk_3": True,
             "next_1": 2,
             "next_2": 3,
-            "next_3": 1,
+            "next_3": 4,
             "global_loops": 10,
-            "skill_dirs": ["right", "up", "up", "up", "left"],
-            "share_code": "103435586",
+            "skill_dirs": ["up", "up", "up", "right", "right"],
+            "share_code": "167982162",
             "auto_restart": False,
             "restart_cmd": "start steam://run/2483190",
             "race_timeout": 600,
@@ -350,14 +350,14 @@ class FH_UltimateBot(
         # 3. 方案迁移：旧配置没有 schemes 结构时自动迁移
         if not self.config.get("schemes"):
             scheme_1 = {
-                "name": "方案1",
-                "class_image": self.config.get("class_image", "classB600.png"),
+                "name": "方案1 - 无通行证用Revuelto刷超抽",
+                "class_image": self.config.get("class_image", "classS2829.png"),
                 "race_count": self.config.get("race_count", 99),
                 "buy_count": self.config.get("buy_count", 30),
                 "cj_count": self.config.get("cj_count", 30),
                 "sell_count": self.config.get("sell_count", 30),
-                "skill_dirs": self.config.get("skill_dirs", ["right", "up", "up", "up", "left"]),
-                "share_code": self.config.get("share_code", "103435586"),
+                "skill_dirs": self.config.get("skill_dirs", ["up", "up", "up", "right", "right"]),
+                "share_code": self.config.get("share_code", "167982162"),
                 "cj_mode": self.config.get("cj_mode", 2),
                 "chk_1": self.config.get("chk_1", True),
                 "chk_2": self.config.get("chk_2", True),
@@ -365,7 +365,7 @@ class FH_UltimateBot(
                 "chk_4": self.config.get("chk_4", True),
                 "next_1": self.config.get("next_1", 2),
                 "next_2": self.config.get("next_2", 3),
-                "next_3": self.config.get("next_3", 1),
+                "next_3": self.config.get("next_3", 4),
                 "next_4": self.config.get("next_4", 1),
             }
             schemes = [scheme_1]
@@ -388,7 +388,7 @@ class FH_UltimateBot(
         _idx = self.config.get("current_scheme", 0)
         _schemes = self.config.get("schemes", [])
         if 0 <= _idx < len(_schemes):
-            self.config["class_image"] = _schemes[_idx].get("class_image", "classB600.png")
+            self.config["class_image"] = _schemes[_idx].get("class_image", "classS2829.png")
 
         # 4. 将最新、最完整的配置重新写回外置文件
         try:
@@ -547,7 +547,7 @@ class FH_UltimateBot(
             self.entry_sc.insert(0, str(scheme.get("sell_count", 30)))
         if hasattr(self, "entry_share"):
             self.entry_share.delete(0, "end")
-            self.entry_share.insert(0, str(scheme.get("share_code", "103435586")))
+            self.entry_share.insert(0, str(scheme.get("share_code", "167982162")))
         if hasattr(self, "entry_next1"):
             self.entry_next1.delete(0, "end")
             self.entry_next1.insert(0, str(scheme.get("next_1", 2)))
@@ -556,7 +556,7 @@ class FH_UltimateBot(
             self.entry_next2.insert(0, str(scheme.get("next_2", 3)))
         if hasattr(self, "entry_next3"):
             self.entry_next3.delete(0, "end")
-            self.entry_next3.insert(0, str(scheme.get("next_3", 1)))
+            self.entry_next3.insert(0, str(scheme.get("next_3", 4)))
         if hasattr(self, "entry_next4"):
             self.entry_next4.delete(0, "end")
             self.entry_next4.insert(0, str(scheme.get("next_4", 1)))
@@ -574,7 +574,7 @@ class FH_UltimateBot(
                 self.opt_cj_mode.set("模式2: 从设计与喷涂开始")
             else:
                 self.opt_cj_mode.set("模式1: 从我的车辆开始")
-        self.config["skill_dirs"] = scheme.get("skill_dirs", ["right", "up", "up", "up", "left"])
+        self.config["skill_dirs"] = scheme.get("skill_dirs", ["up", "up", "up", "right", "right"])
         if hasattr(self, "update_skill_grid"):
             self.update_skill_grid()
         if hasattr(self, "lbl_race"):
@@ -957,11 +957,11 @@ class FH_UltimateBot(
         )
         box_race.configure(height=300)
         self.entry_share = ctk.CTkEntry(box_race, width=128, height=30, justify="center", placeholder_text="蓝图数字代码")
-        self.entry_share.insert(0, self.config.get("share_code", "103435586"))
+        self.entry_share.insert(0, self.config.get("share_code", "167982162"))
         self.entry_share.pack(pady=(2, 4))
 
         # DirectML 加速选项
-        self.var_directml = ctk.BooleanVar(value=self.config.get("use_directml", False))
+        self.var_directml = ctk.BooleanVar(value=self.config.get("use_directml", True))
         self.chk_directml = ctk.CTkCheckBox(box_race, text="DirectML加速OCR\n会占用少量显存", variable=self.var_directml, width=160, font=ctk.CTkFont(size=13))
         self.chk_directml.pack(pady=(2, 4))
 
@@ -1098,7 +1098,7 @@ class FH_UltimateBot(
         ).grid(row=4, column=0, columnspan=4, pady=(8, 0))
 
         self.next_frame3, self.entry_next3, self.chk3 = create_next_step(
-            self.config_frame, self.var_chk3, self.config.get("next_3", 1)
+            self.config_frame, self.var_chk3, self.config.get("next_3", 4)
         )
 
         # ====== 卖车卡片 ======
