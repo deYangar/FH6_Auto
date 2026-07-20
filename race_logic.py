@@ -57,7 +57,7 @@ class RaceMixin:
             return None
 
         text = engine.detect_text_in_region(img, {
-            "y_start": 0.78,
+            "y_start": 0.9,
             "y_end": 1.0,
             "x_start": 0,
             "x_end": 1.0,
@@ -373,7 +373,7 @@ class RaceMixin:
             if img is not None:
                 try:
                     text = engine.detect_text_in_region(img, {
-                        "y_start": 0.80,
+                        "y_start": 0.9,
                         "y_end": 1.0,
                         "x_start": 0,
                         "x_end": 1.0,

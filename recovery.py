@@ -70,10 +70,32 @@ class RecoveryMixin:
                 # ==========================================
                 try:
                     # 1. 更新识图区域为游戏实际窗口区域(识图必须在游戏窗口内)
+                    # 打印 DPI 状态用于调试
+                    _dpi_aware = ctypes.c_int()
+                    ctypes.windll.shcore.GetProcessDpiAwareness(0, ctypes.byref(_dpi_aware))
+                    _dpi_val = 0
+                    try:
+                        _dpi_val = ctypes.windll.user32.GetDpiForWindow(hwnd)
+                    except:
+                        pass
+                    if _dpi_val > 0:
+                        self.log(f"[DPI] awareness={_dpi_aware.value} dpi={_dpi_val} ({_dpi_val/96*100:.0f}%)")
+                    else:
+                        self.log(f"[DPI] awareness={_dpi_aware.value} dpi=unknown")
+                    
                     client_rect = win32gui.GetClientRect(hwnd)
                     pt = win32gui.ClientToScreen(hwnd, (0, 0))
                     gx, gy = pt[0], pt[1]
                     gw, gh = client_rect[2], client_rect[3]
+                    self.log(f"[Window] GetClientRect=({client_rect[0]},{client_rect[1]},{client_rect[2]},{client_rect[3]}) -> gw={gw} gh={gh} pos=({gx},{gy})")
+                    
+                    # 如果 DPI aware 且窗口被缩放，尝试用物理像素
+                    if _dpi_val > 96 and gw < 1000:
+                        scale = _dpi_val / 96.0
+                        gw_phys = int(gw * scale)
+                        gh_phys = int(gh * scale)
+                        self.log(f"[DPI] 检测到 DPI 缩放 {scale:.2f}x，逻辑 {gw}x{gh} -> 物理 {gw_phys}x{gh_phys}")
+                        gw, gh = gw_phys, gh_phys
                     # ====== 【核心修复】:拦截启动小窗/防作弊闪屏 ======
                     # 如果窗口宽度和高度太小,说明绝对不是正常的游戏主画面
                     if gw < 1000 or gh < 600:

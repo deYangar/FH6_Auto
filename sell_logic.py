@@ -137,6 +137,36 @@ class SellMixin:
         time.sleep(1.0)
         self.log("筛选完成")
 
+        # ====== 筛选后 OCR 检测：是否没有可用车辆 ======
+        _no_car = False
+        _ocr_engine = self.get_ocr_engine()
+        if _ocr_engine:
+            _filter_img = self.capture_region(self.regions["全界面"])
+            if _filter_img is not None:
+                _filter_text = _ocr_engine.detect_text_in_region(_filter_img, {
+                    "y_start": 0.2,
+                    "y_end": 0.8,
+                    "x_start": 0.15,
+                    "x_end": 0.85,
+                })
+                self.log(f"筛选后 OCR: {_filter_text}")
+                if "没有可用的车辆" in _filter_text or "找不到可用的车辆" in _filter_text:
+                    _no_car = True
+
+        if _no_car:
+            self.log("找不到对应车辆，跳过删车环节")
+            self.hw_press("enter")
+            time.sleep(0.7)
+            self.hw_press("x")
+            time.sleep(0.7)
+            self.hw_press("esc")
+            time.sleep(0.7)
+            self.hw_press("esc")
+            time.sleep(0.7)
+            self.hw_press("esc")
+            time.sleep(0.7)
+            return True
+
         # 逐车删除
         not_found_pages = 0
         while self.sc_count < target_count:
@@ -151,7 +181,9 @@ class SellMixin:
                 main_threshold=0.77,
                 anti_threshold=0.65,
                 timeout=1.0,
-                interval=0.2
+                interval=0.2,
+                top_threshold=0.0,
+                bot_threshold=0.0
             )
 
             if pos_target:

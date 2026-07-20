@@ -7,8 +7,7 @@
 > 本项目仅供 Python 自动化技术交流与学习使用。
 
 ---
-## ✅ 已适配 7月14日更新后，新的刷技能点途径。目前由于时间关系，方案1还是用斯巴鲁刷超抽，可能会亏，没通行证的玩家建议暂时停止使用后面的刷超抽功能，跑图没问题。后面找到新的适合车辆后更新
-## ✅ 已适配 1974 马自达 #123 Mad Mike 808 Wagon 更高效率刷超抽，适合拥有通行证的玩家使用
+## ✅ 已适配 7月14日更新后的新刷技能点途径。方案1已适配使用 Revuelto 刷超抽，无需通行证！方案2适配 1974 马自达 #123 Mad Mike 808 Wagon 更高效率刷超抽，适合拥有通行证的玩家使用
 
 ---
 
@@ -186,6 +185,54 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 ---
 
 ## 更新日志
+
+### v1.2.9.0 (2026-07-20)
+
+**⚠️ 升级须知：本次更新改动较大，升级前请先删除旧版的 `images/` 和 `cache/` 文件夹，程序启动时会自动释放最新模板并重建缓存。**
+
+**🚗 方案1 适配 Revuelto 刷超抽（无通行证方案）！！！**
+- 方案1 重命名为「方案1 - 无通行证用Revuelto刷超抽」
+- 技能树路径 skill_dirs 改为 `['up','up','up','right','right']`（适配 Revuelto 技能树 13->9->5->1->2->3）
+- 步骤顺序 next_4 默认改为 1（2341 循环）
+- 等级标签 classB600.png -> classS2829.png，反向校验 anti_class_b600.png -> anti_class_S2829.png
+- 分享码改为 167982162
+- DirectML 加速默认开启
+
+**🔍 筛选导航替代图片匹配选车**
+- 跑图选车统一用固定按键导航 + OCR 检测“上车”（Y -> Enter -> 35×down -> Enter -> 19×down -> Enter -> ESC -> Enter），替代旧版 skillcar/liketag/drivingtag 图片匹配
+- 删车筛选用固定按键导航（方案1: down×2/6/14/28，方案2: down×7/10/32/5），替代 repitem/CCbrand 图片匹配
+- 删车上车检测统一用 OCR 识别“上车”，替代 rc.png
+- 删除删车 brand_retry 逻辑，筛选后直接逐车删除
+
+**📊 列优先排序选车**
+- 图片匹配候选从“最高分优先”改为列优先排序（1->5->9->2->6->10->3->7->11->4->8->12），同列内从上到下，列间从左到右
+- 影响 `find_image_ultimate_safe`（删车）和 `find_skill_car_strict`（跑图选车）
+
+**🗑️ 删车匹配修复**
+- `find_image_ultimate_safe` 新增 `top_threshold`/`bot_threshold` 参数，删车场景设为 0.0 跳过顶部文字和右下角校验
+- 修复 debug 截图 `parallel_results` 未定义异常
+- 新增 debug 截图保存到 `debug/ultimate_safe/`
+
+**🚫 删车筛选后空结果检测**
+- 筛选完按 ESC 后 OCR 扫描，识别到“没有可用的车辆”自动跳过删车环节（Enter -> X -> ESC×3）
+
+**🐛 DPI 缩放修复**
+- `SetProcessDpiAwareness(2)` 移至 main.py 第一行
+- 窗口恢复检测增加 DPI 状态日志和缩放比例探测
+
+**🛒 买车流程方案区分**
+- 方案1 买车后 down×4，方案2 down×1
+- 修复 use_send=True 导致按键翻倍问题
+
+**🔧 其他改进**
+- 模板路径查找改为 APP_DIR/scheme -> INTERNAL_DIR/scheme -> APP_DIR/root -> INTERNAL_DIR/root
+- 超抽选车 TAG/CLS 位置从硬编码改为动态计算（用 newCC.png 自动定位）
+- 方案2模板图片更新（newcartag/classS1702/newCC/removecarobject）
+- images/ 根目录7个重复文件清理，模板归入 scheme_1/
+- OCR 完赛检测区域从下 1/5 收窄到下 1/10
+- 日志分类精细化（ERROR/WARN/DEBUG）
+- 大循环间隔加画面恢复检测（防黑屏加载）
+- 多线程匹配 max_workers 从 cpu//2 改为 cpu-1
 
 ### v1.2.8.1 (2026-07-19)
 

@@ -53,7 +53,7 @@ LOG_FILE = os.path.join(APP_DIR, "bot_log.txt")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
 TEMPLATE_CACHE_FILE = os.path.join(CACHE_DIR, "template_cache.pkl")
 TEMPLATE_META_FILE = os.path.join(CACHE_DIR, "template_meta.json")
-CURRENT_VERSION = "1.2.8.1"
+CURRENT_VERSION = "1.2.9.0"
 
 def auto_extract_configs():
     # 只从 APP_DIR 下的历史文件名迁移，不再使用 config/ 子目录
@@ -99,13 +99,18 @@ def set_scheme_dir(scheme_dir):
 def get_img_path(filename):
     basename = os.path.basename(filename)
     if _current_scheme_dir:
+        # 先查外部 APP_DIR 的 scheme 目录
         scheme_path = os.path.join(APP_DIR, "images", _current_scheme_dir, basename)
         if os.path.exists(scheme_path):
             return scheme_path
-    else:
-        ext_path = os.path.join(APP_DIR, "images", basename)
-        if os.path.exists(ext_path):
-            return ext_path
+        # 再查内置 INTERNAL_DIR 的 scheme 目录
+        int_scheme_path = os.path.join(INTERNAL_DIR, "images", _current_scheme_dir, basename)
+        if os.path.exists(int_scheme_path):
+            return int_scheme_path
+    # scheme 目录没找到，回退到根目录
+    ext_path = os.path.join(APP_DIR, "images", basename)
+    if os.path.exists(ext_path):
+        return ext_path
     int_path = os.path.join(INTERNAL_DIR, "images", basename)
     if os.path.exists(int_path):
         return int_path

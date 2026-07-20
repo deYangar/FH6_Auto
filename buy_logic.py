@@ -112,13 +112,15 @@ class BuyMixin:
             self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
             self.hw_press("enter")
             time.sleep(1.0)
-        # 品牌进入车辆列表后，往下滚4次确保看到车辆
+        # 品牌进入车辆列表后，方案1往下滚4次，方案2滚1次
+        _scheme_idx = self.config.get("current_scheme", 0)
+        _scroll_count = 4 if _scheme_idx == 0 else 1
         time.sleep(0.7)
-        for _dn in range(4):
+        for _dn in range(_scroll_count):
             if not self.is_running:
                 return False
-            self.log(f"[BuyScroll] {_dn+1}/4")
-            self.hw_press("down", delay=0.5, use_send=True)
+            self.log(f"[BuyScroll] {_dn+1}/{_scroll_count}")
+            self.hw_press("down")
             time.sleep(1.0)
         self.log("[BuyScroll] done")
 

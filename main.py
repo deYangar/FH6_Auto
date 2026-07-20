@@ -1,6 +1,17 @@
 import sys
 import os
-# ====== 【修复 OMP 冲突的核心代码】 ======
+import ctypes
+
+# ====== DPI Awareness（必须在所有 UI 操作之前设置）======
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+# ====== 【修复 OMP 冲突的核心代码】======
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # =======================================
 import json
@@ -1487,11 +1498,34 @@ class FH_UltimateBot(
         else:
             text = str(message or "")
             upper_text = text.upper()
-            if upper_text.startswith("[ERROR]") or "致命" in text or "异常" in text:
+            # ERROR: 真正的错误、异常中断
+            if (upper_text.startswith("[ERROR]") or "异常" in text or "中断" in text
+                    or "失败" in text and "点击" not in text
+                    or "无法" in text
+                    or "拒绝" in text
+                    or "连续 3 次" in text):
                 resolved_level = "ERROR"
-            elif upper_text.startswith("[WARN]") or "警告" in text or "失败" in text or "未找到" in text:
+            # WARN: 未找到、跳过、放弃、超时、黑屏、输入无效
+            elif (upper_text.startswith("[WARN]") or "未找到" in text or "未命中" in text
+                    or "未识别" in text or "不足" in text
+                    or "超时" in text or "放弃" in text
+                    or "跳过" in text or "黑屏" in text
+                    or "全黑" in text or "截图异常" in text
+                    or "未生效" in text or "刷完" in text
+                    or "丢失" in text or "卡死" in text
+                    or "无效" in text):
                 resolved_level = "WARN"
-            elif upper_text.startswith("[DEBUG]") or "[Calibration]" in text or "[Diagnostic]" in text:
+            # DEBUG: 匹配分数、坐标、调试截图路径、内部状态
+            elif (upper_text.startswith("[DEBUG]") or "[Calibration]" in text
+                    or "[Diagnostic]" in text or "[GrayMatch]" in text
+                    or "[ImageMatch]" in text or "[AlphaMatch]" in text
+                    or "[StrictCar]" in text or "[Capture]" in text
+                    or "[BuyScroll]" in text or "[DownScroll]" in text
+                    or "[LoadTemplate]" in text or "[ScaledTpl" in text
+                    or "[CarSelect" in text or "[UpgradeDebug]" in text
+                    or "[Safety]" in text or "[BuyNewUsed]" in text
+                    or "最佳缩放" in text or "截图均值" in text
+                    or "debug" in text.lower() and "保存" in text):
                 resolved_level = "DEBUG"
             else:
                 resolved_level = "INFO"
@@ -1803,6 +1837,17 @@ class FH_UltimateBot(
                     self.log(f"开启新一轮大循环 ({self.global_loop_current}/{total_loops})")
 
                     self.ui_call(self.lbl_runtime_loop.configure, text=f"{self.global_loop_current} / {total_loops}")
+
+                    # 等待游戏画面恢复（过场/加载可能黑屏）
+                    self.log("等待游戏画面恢复...")
+                    for _ in range(30):
+                        if not self.is_running:
+                            break
+                        screen = self.capture_region(self.regions.get("全界面"))
+                        if screen is not None and screen.mean() > 10:
+                            break
+                        time.sleep(1.0)
+                    time.sleep(2.0)
 
                     self.race_counter = 0
                     self.car_counter = 0

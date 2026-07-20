@@ -133,6 +133,7 @@ class VisionMixin:
         tpl = cv2.imread(actual_path, cv2.IMREAD_COLOR)
         if tpl is not None:
             self.template_cache[cache_key] = tpl
+            self.log(f"[LoadTemplate] {template_path} -> {actual_path} shape={tpl.shape}")
         return tpl, actual_path
 
     def load_template_gray(self, template_path):
@@ -385,6 +386,8 @@ class VisionMixin:
                     tpl = raw
                 if tpl is not None:
                     self.scaled_template_cache[mem_key] = tpl
+                    if scale == 1.0:
+                        self.log(f"[ScaledTpl-CACHE] {template_path} rel_key={rel_key} shape={tpl.shape}")
                     return tpl, actual_path
 
         template_orig, actual_path = self.load_template(template_path)
@@ -639,7 +642,7 @@ class VisionMixin:
                 return pos
             time.sleep(interval)
         return None
-    def find_image_ultimate_safe(self, main_path, anti_path, region=None, main_threshold=0.80, anti_threshold=0.65, mask_areas=None):
+    def find_image_ultimate_safe(self, main_path, anti_path, region=None, main_threshold=0.80, anti_threshold=0.65, mask_areas=None, top_threshold=0.75, bot_threshold=0.85):
         if not self.is_running: return None
         try:
             screen_bgr = self.capture_region(region, mask_areas=mask_areas)
@@ -727,20 +730,36 @@ class VisionMixin:
                             res_bot = cv2.matchTemplate(search_bot, tpl_pi_core, cv2.TM_CCOEFF_NORMED)
                             _, score_bot, _, _ = cv2.minMaxLoc(res_bot)
 
-                    if base_score >= 0.76 and score_top >= 0.75 and score_bot >= 0.85:
+                    if base_score >= 0.76 and score_top >= top_threshold and score_bot >= bot_threshold:
                         self.log(f"[终极安全-通过]: 锁定目标!总分:{base_score:.3f} | 顶部车名:{score_top:.2f} | 右下调校:{score_bot:.2f}")
                         return (x + w_m // 2 + (region[0] if region else 0), y + h_m // 2 + (region[1] if region else 0))
                     else:
-                        pass # 静默拦截,继续寻找下一个坐标
+                        self.log(f"[终极安全-拦截]: 总分={base_score:.3f} 顶部={score_top:.2f} 右下={score_bot:.2f} pos=({x},{y}) scale={scale:.3f}")
+
+            # 保存最终截图用于调试
+            import os as _os
+            _debug_dir = _os.path.join(APP_DIR, "debug", "ultimate_safe")
+            _os.makedirs(_debug_dir, exist_ok=True)
+            _stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time()*1000)%1000:03d}"
+            # 画标注：用最后一次 scale 的 points
+            _annotated = screen_bgr.copy()
+            for _px, _py, _pw, _ph, _ps in points:
+                cv2.rectangle(_annotated, (_px, _py), (_px+_pw, _py+_ph), (0, 255, 0), 2)
+                cv2.putText(_annotated, f"{scale:.2f}:{_ps:.2f}", (_px, _py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            _path = _os.path.join(_debug_dir, f"{_stamp}_annotated.png")
+            cv2.imwrite(_path, _annotated)
+            _path_raw = _os.path.join(_debug_dir, f"{_stamp}_raw.png")
+            cv2.imwrite(_path_raw, screen_bgr)
+            self.log(f"[终极安全] 保存调试截图: {_path} 候选总数={len(points)}")
 
             return None
         except Exception as e:
             self.log(f"ultimate_safe 异常: {e}")
             return None
-    def wait_for_image_ultimate_safe(self, main_path, anti_path, region=None, main_threshold=0.80, anti_threshold=0.65, timeout=3, interval=0.2, mask_areas=None):
+    def wait_for_image_ultimate_safe(self, main_path, anti_path, region=None, main_threshold=0.80, anti_threshold=0.65, timeout=3, interval=0.2, mask_areas=None, top_threshold=0.75, bot_threshold=0.85):
         start = time.time()
         while self.is_running and time.time() - start < timeout:
-            pos = self.find_image_ultimate_safe(main_path, anti_path, region, main_threshold, anti_threshold, mask_areas=mask_areas)
+            pos = self.find_image_ultimate_safe(main_path, anti_path, region, main_threshold, anti_threshold, mask_areas=mask_areas, top_threshold=top_threshold, bot_threshold=bot_threshold)
             if pos: return pos
             time.sleep(interval)
         return None
@@ -773,19 +792,46 @@ class VisionMixin:
             TAG_PAD = 4
             CLS_PAD = 4
 
-            TAG_REL_X_RATIO = 220.0 / 265.0
-            TAG_REL_Y_RATIO = 142.0 / 198.0
-            CLS_REL_X_RATIO = 192.0 / 265.0
-            CLS_REL_Y_RATIO = 169.0 / 198.0
-
+            # 动态计算 TAG 和 CLS 在 newCC.png 中的相对位置
             _cls_img = self.config.get("class_image", "classS2829.png")
+
+            # 加载原始模板（scale=1.0）用来自动定位 TAG/CLS 位置
+            _ref_tpl, _ = self.get_scaled_template("newCC.png", 1.0)
+            _ref_tag, _ = self.get_scaled_template("newcartag.png", 1.0)
+            _ref_cls, _ = self.get_scaled_template(_cls_img, 1.0)
+
+            if _ref_tpl is not None and _ref_tag is not None:
+                _r = cv2.matchTemplate(_ref_tpl, _ref_tag, cv2.TM_CCOEFF_NORMED)
+                _, _, _, _tl = cv2.minMaxLoc(_r)
+                TAG_REL_X_RATIO = _tl[0] / _ref_tpl.shape[1]
+                TAG_REL_Y_RATIO = _tl[1] / _ref_tpl.shape[0]
+            else:
+                TAG_REL_X_RATIO = 260.0 / 314.0
+                TAG_REL_Y_RATIO = 169.0 / 236.0
+
+            if _ref_tpl is not None and _ref_cls is not None:
+                _r2 = cv2.matchTemplate(_ref_tpl, _ref_cls, cv2.TM_CCOEFF_NORMED)
+                _, _, _, _cl = cv2.minMaxLoc(_r2)
+                CLS_REL_X_RATIO = _cl[0] / _ref_tpl.shape[1]
+                CLS_REL_Y_RATIO = _cl[1] / _ref_tpl.shape[0]
+            else:
+                CLS_REL_X_RATIO = 228.0 / 314.0
+                CLS_REL_Y_RATIO = 201.0 / 236.0
+
+            self.log(f"[StrictCar] TAG ratio=({TAG_REL_X_RATIO:.4f},{TAG_REL_Y_RATIO:.4f}) CLS ratio=({CLS_REL_X_RATIO:.4f},{CLS_REL_Y_RATIO:.4f})")
 
             # === Step 0: 预计算所有 scaled template + mask ===
             scale_data = {}
+            _load_debug_count = 0
             for scale in scales:
-                main_tpl, _ = self.get_scaled_template("newCC.png", scale)
-                tag_tpl, _ = self.get_scaled_template("newcartag.png", scale)
-                class_tpl, _ = self.get_scaled_template(_cls_img, scale)
+                main_tpl, main_path = self.get_scaled_template("newCC.png", scale)
+                tag_tpl, tag_path = self.get_scaled_template("newcartag.png", scale)
+                class_tpl, cls_path = self.get_scaled_template(_cls_img, scale)
+                if _load_debug_count == 0:
+                    self.log(f"[StrictCar-Load] newCC.png path={main_path} shape={main_tpl.shape if main_tpl is not None else None}")
+                    self.log(f"[StrictCar-Load] newcartag.png path={tag_path} shape={tag_tpl.shape if tag_tpl is not None else None}")
+                    self.log(f"[StrictCar-Load] {_cls_img} path={cls_path} shape={class_tpl.shape if class_tpl is not None else None}")
+                    _load_debug_count = 1
                 if main_tpl is None or tag_tpl is None or class_tpl is None:
                     continue
                 h_m, w_m = main_tpl.shape[:2]
@@ -838,7 +884,7 @@ class VisionMixin:
                 except Exception:
                     return (scale, [], 0.0, (0, 0))
 
-            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) // 2))
+            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) - 1))
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 parallel_results = list(ex.map(_match_one_scale, scale_data.items()))
 
@@ -847,6 +893,10 @@ class VisionMixin:
                 if scale in scale_data:
                     scale_data[scale]['main_res_max'] = max_val
                     scale_data[scale]['main_res_max_loc'] = max_loc
+                self.log(
+                    f"[StrictCar-Step1] scale={scale:.3f} max_score={max_val:.4f} "
+                    f"candidates={len(candidates)} threshold={MAIN_THRESHOLD} fallback={MAIN_FALLBACK_MIN}"
+                )
 
             # 按最佳候选分数降序
             parallel_results.sort(
@@ -2001,7 +2051,7 @@ class VisionMixin:
                 except Exception:
                     return (scale, [])
 
-            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) // 2))
+            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) - 1))
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 parallel_results = list(ex.map(_match_one_scale, scale_data.items()))
 
