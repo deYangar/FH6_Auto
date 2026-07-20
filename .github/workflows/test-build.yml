@@ -1,0 +1,44 @@
+name: Test Build (dev)
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build FH6Auto.exe
+        run: |
+          python -m PyInstaller --clean -n "FH6Auto" -F -w --uac-admin --noupx main.py `
+            --icon=assets/icon.ico `
+            --add-data "images;images" `
+            --add-data "assets;assets" `
+            --add-data "onnx_models;onnx_models" `
+            --hidden-import yaml `
+            --hidden-import onnxruntime `
+            --noconfirm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FH6Auto-test
+          path: dist/FH6Auto.exe
