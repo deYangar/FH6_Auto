@@ -417,15 +417,15 @@ class CJMixin:
                     self.hw_press("enter")
                     time.sleep(1.0)
                 # 品牌进入车辆列表后，往下滚4次确保看到车辆
-                self.log(f"[DownScroll] current_scheme={self.config.get('current_scheme', '?')}, 开始下滚4次")
+                self.log("[DownScroll] start")
                 time.sleep(0.7)
                 for _dn in range(4):
                     if not self.is_running:
                         return False
-                    self.log(f"[DownScroll] 第 {_dn+1}/4 次下滚")
-                    self.hw_press("down", delay=0.3)
-                    time.sleep(0.8)
-                self.log("[DownScroll] 下滚完成")
+                    self.log(f"[DownScroll] {_dn+1}/4")
+                    self.hw_press("down", delay=0.5, use_send=True)
+                    time.sleep(1.0)
+                self.log("[DownScroll] done")
                 jump_pages = max(0, self.memory_car_page - 1)
 
                 if jump_pages > 0:
