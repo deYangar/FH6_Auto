@@ -45,7 +45,7 @@ _PAGE_SETTLE = 0.5        # 翻页后等待列表渲染
 _TOGGLE_SETTLE = 0.8      # Enter 勾选后等待
 _MAX_PAGES = 14           # 单轮搜索最大翻页数（整表约 66 个可聚焦行，半页步进足够两轮）
 _MAX_CORRECTION = 8       # 偏移校正最大扫描步数（单方向）
-_CLICK_DIFF_THRESHOLD = 60.0  # 点击勾选验证：复选框区域平均像素差阈值
+_CLICK_DIFF_THRESHOLD = 120.0  # 点击勾选验证：复选框区域平均像素差阈值（实测成功勾选差值 220~235，留足防误判余量）
 
 
 def _norm_text(t):
