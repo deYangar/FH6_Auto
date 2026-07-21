@@ -38,13 +38,14 @@ DEFAULT_SELL_FILTER_SCHEME2 = ["S1", "漂移赛车", "后轮驱动", "传奇"]
 # 跑图选车 (Mad Mike 808 Wagon): Y -> Enter(收藏) -> 35下(复古拉力赛车) -> 19下(传奇)
 DEFAULT_RACE_FILTER = ["收藏", "复古拉力赛车", "传奇"]
 
-# 按键节奏
-_PRESS_DELAY = 0.08       # hw_press 按键持续时间
-_PRESS_GAP = 0.05         # 连续方向键之间的间隔
-_PAGE_SETTLE = 0.35       # 翻页后等待列表渲染
+# 按键节奏（与旧版固定导航验证过的节奏一致：delay=0.1 + gap=0.1，快了会丢按键）
+_PRESS_DELAY = 0.1        # hw_press 按键持续时间
+_PRESS_GAP = 0.1          # 连续方向键之间的间隔
+_PAGE_SETTLE = 0.5        # 翻页后等待列表渲染
 _TOGGLE_SETTLE = 0.8      # Enter 勾选后等待
 _MAX_PAGES = 14           # 单轮搜索最大翻页数（整表约 66 个可聚焦行，半页步进足够两轮）
 _MAX_CORRECTION = 8       # 偏移校正最大扫描步数（单方向）
+_CLICK_DIFF_THRESHOLD = 60.0  # 点击勾选验证：复选框区域平均像素差阈值
 
 
 def _norm_text(t):
@@ -154,10 +155,26 @@ class FilterNavMixin:
         if engine is None:
             return []
         try:
-            return engine.detect_lines_in_region(panel)
+            lines = engine.detect_lines_in_region(panel)
         except Exception as e:
             self.log(f"[FilterNav] OCR 行检测异常: {e}", level="ERROR")
             return []
+        return self._clean_panel_lines(panel, lines)
+
+    @staticmethod
+    def _clean_panel_lines(panel, lines):
+        """
+        剔除面板顶部固定的"筛选"标题残片（随滚动始终在顶部，OCR 读数不稳定，
+        会污染页指纹导致卡底检测失效）。保留滚动到顶部的完整行（高度正常）。
+        """
+        h = panel.shape[0]
+        out = []
+        for l in lines:
+            x1, y1, x2, y2 = l["box"]
+            if y1 < h * 0.04 and (y2 - y1) < 18:
+                continue
+            out.append(l)
+        return out
 
     # ============ 高亮行检测 ============
 
@@ -360,10 +377,15 @@ class FilterNavMixin:
                     tgt_idx = i
                     break
 
-            if tgt_idx is not None and hl_idx is not None:
-                return self._move_highlight_and_toggle(
-                    panel, lines, hl_idx, tgt_idx, target_n, label
-                )
+            if tgt_idx is not None:
+                if hl_idx is not None:
+                    return self._move_highlight_and_toggle(
+                        panel, lines, hl_idx, tgt_idx, target_n, label
+                    )
+                # 高亮位置未知（滚动后的页面高亮样式不同，检测可能失败）：
+                # 直接点击目标行复选框勾选，用点击前后像素差验证
+                self.log(f"[{label}] 目标可见但高亮行未知，改用点击勾选: {target}")
+                return self._click_toggle_line(panel, lines[tgt_idx], label)
 
             # 不在屏：向下翻半页
             step = max(3, len(lines) // 2)
@@ -406,12 +428,69 @@ class FilterNavMixin:
         ):
             for _ in range(max_steps):
                 self.hw_press(direction, delay=_PRESS_DELAY)
-                time.sleep(_PRESS_GAP + 0.05)
+                time.sleep(_PRESS_GAP)
                 if self._highlight_is_target(target_n):
                     self.hw_press("enter")
                     time.sleep(_TOGGLE_SETTLE)
                     return True
         self.log(f"[{label}] 高亮校正后仍未落在目标行: {target_n}", level="ERROR")
+        return False
+
+    def _click_toggle_line(self, panel, line, label):
+        """
+        高亮位置未知时，直接点击目标行勾选复选框。
+
+        验证方式：点击前后对复选框区域（行右侧矩形条）做像素差比较，
+        差值超过阈值视为勾选成功（□→■ 填充变化很大，仅焦点样式变化很小）。
+        两段尝试：PostMessage 点击 -> SendMessage 点击 -> 盲 Enter（失败再按一次 Enter 回滚，
+        避免误勾未知高亮行后留下脏筛选）。
+        """
+        gx, gy, gw, gh = self.regions["全界面"]
+        px0 = gx + int(gw * FILTER_PANEL_REGION["x_start"])
+        py0 = gy + int(gh * FILTER_PANEL_REGION["y_start"])
+        ph, pw = panel.shape[:2]
+        x1, y1, x2, y2 = line["box"]
+        cy = (y1 + y2) // 2
+        ry1, ry2 = max(0, y1 - 3), min(ph, y2 + 3)
+        rx1, rx2 = pw - 48, pw - 4  # 复选框在行右端
+
+        def _cb_crop(img):
+            if img is None or img.shape[0] != ph or img.shape[1] != pw:
+                return None
+            return img[ry1:ry2, rx1:rx2].astype(np.float32)
+
+        before = _cb_crop(panel)
+        if before is None or before.size == 0:
+            return False
+
+        click_x = px0 + pw // 2  # 行横跨整个面板，点水平中心即可
+        click_y = py0 + cy
+
+        for use_send in (False, True):
+            if not self.is_running:
+                return False
+            self.game_click((click_x, click_y), use_send=use_send)
+            time.sleep(0.5)
+            after = _cb_crop(self._capture_filter_panel())
+            if after is None or after.shape != before.shape:
+                continue
+            diff = float(np.abs(after - before).mean())
+            self.log(f"[{label}] 点击行「{line['text']}」 use_send={use_send} 复选框差值={diff:.1f}")
+            if diff > _CLICK_DIFF_THRESHOLD:
+                return True
+
+        # 最后手段：盲 Enter + 验证；未命中目标则再按一次 Enter 回滚可能的误勾
+        self.hw_press("enter")
+        time.sleep(0.6)
+        after = _cb_crop(self._capture_filter_panel())
+        if after is not None and after.shape == before.shape:
+            diff = float(np.abs(after - before).mean())
+            self.log(f"[{label}] 盲 Enter 验证 复选框差值={diff:.1f}")
+            if diff > _CLICK_DIFF_THRESHOLD:
+                return True
+        self.hw_press("enter")
+        time.sleep(0.5)
+        self.log(f"[{label}] 点击/盲 Enter 均未验证成功，已回滚", level="WARN")
         return False
 
     def _highlight_is_target(self, target_n):
@@ -448,6 +527,9 @@ class FilterNavMixin:
                 )
             stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
             safe = "".join(c for c in name if c.isalnum() or c in "-_")
+            # 原图（无标注，供颜色/样式分析）+ 标注图
+            raw_path = os.path.join(out_dir, f"{stamp}_{safe}_raw.png")
+            cv2.imencode(".png", panel)[1].tofile(raw_path)
             out_path = os.path.join(out_dir, f"{stamp}_{safe}.png")
             cv2.imencode(".png", annotated)[1].tofile(out_path)
         except Exception as e:
