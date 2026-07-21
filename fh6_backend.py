@@ -285,6 +285,11 @@ def capture_window(hwnd, region=None, window_offset=(0, 0)):
 
             try:
                 screen_bgr = _capture_once(hwnd, w, h, use_cache=True)
+                if screen_bgr is None:
+                    # PrintWindow 被拒（画面过渡/DWM 瞬时失败）：释放缓存重建重试，
+                    # 避免失败的 GDI 对象污染缓存导致后续截图全部失败（v1.2.10.3 回归修复）
+                    _release_capture_cache()
+                    screen_bgr = _capture_once(hwnd, w, h, use_cache=False)
             except Exception:
                 # 缓存的 GDI 对象可能失效（窗口重建/显示模式变化）：释放后全新重试一次
                 _release_capture_cache()
