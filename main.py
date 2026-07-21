@@ -203,7 +203,7 @@ class FH_UltimateBot(
                         f.write(f"{e}\n\n{traceback.format_exc()}")
                 except Exception:
                     pass
-                self.ui_call(lambda: self.log(f"[更新检查] 失败: {e}"))
+                self.ui_call(lambda _err=str(e): self.log(f"[更新检查] 失败: {_err}"))
         threading.Thread(target=_check, daemon=True).start()
 
     def _on_up_to_date(self):
@@ -361,7 +361,7 @@ class FH_UltimateBot(
                     user_config = json.load(f)
                     self.config.update(user_config)
             except Exception as e:
-                self.log(f"用户 config.json 损坏,已自动恢复默认配置。")
+                self.log(f"用户 config.json 损坏,已自动恢复默认配置。原因: {e}", level="WARN")
 
         # 3. 方案迁移：旧配置没有 schemes 结构时自动迁移
         if not self.config.get("schemes"):

@@ -650,6 +650,11 @@ class VisionMixin:
 
             scales_to_try = self.get_scales_to_try(fast_mode=True)
 
+            # 预初始化：所有 scale 模板加载失败时循环体一次都不进，
+            # 下方调试块引用的 points/scale 会成为未定义变量
+            points = []
+            scale = 0.0
+
             for scale in scales_to_try:
                 main_tpl_bgr, _ = self.get_scaled_template(main_path, scale)
                 anti_tpl_bgr = None

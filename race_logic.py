@@ -600,8 +600,8 @@ class RaceMixin:
                         # 二次 OCR 验证：如果还能检测到，说明按键没生效，再按一次
                         verify = self.ocr_detect_race_result(is_last_lap)
                         if verify == ocr_result:
-                            self.log(f"二次 OCR 仍为 {ocr_result}，按键可能未生效，重按 {key.upper()}...")
-                            self.hw_press(key)
+                            self.log(f"二次 OCR 仍为 {ocr_result}，按键可能未生效，重按 {ocr_result.upper()}...")
+                            self.hw_press(ocr_result)
                             time.sleep(0.5)
 
                         finished = True

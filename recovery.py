@@ -76,7 +76,7 @@ class RecoveryMixin:
                     _dpi_val = 0
                     try:
                         _dpi_val = ctypes.windll.user32.GetDpiForWindow(hwnd)
-                    except:
+                    except Exception:
                         pass
                     if _dpi_val > 0:
                         self.log(f"[DPI] awareness={_dpi_aware.value} dpi={_dpi_val} ({_dpi_val/96*100:.0f}%)")
