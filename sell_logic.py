@@ -131,7 +131,7 @@ class SellMixin:
                     "y_end": 0.8,
                     "x_start": 0.15,
                     "x_end": 0.85,
-                })
+                }, max_side=640)
                 self.log(f"筛选后 OCR: {_filter_text}")
                 if "没有可用的车辆" in _filter_text or "找不到可用的车辆" in _filter_text:
                     _no_car = True

@@ -1559,26 +1559,45 @@ class FH_UltimateBot(
         # 诊断日志写入文件
         self.record_diagnostic_log(resolved_level, message, ts=time.strftime("%Y-%m-%d %H:%M:%S"))
 
-        def write_ui():
+        # 节流刷新（v1.2.10.1）：每 100ms 批量渲染一次，避免高频日志塞爆 Tk 事件队列
+        self._log_pending.append((resolved_level, full_msg))
+        if not self._log_flush_scheduled:
+            self._log_flush_scheduled = True
             try:
-                # 级别筛选
-                current_filter = getattr(self, "log_level_var", None)
-                if current_filter:
-                    filter_level = current_filter.get()
-                    if filter_level != "ALL" and resolved_level != filter_level:
-                        return
-                self.log_box.configure(state="normal")
-                self.log_box.insert("end", full_msg + "\n")
-                self._log_line_count = getattr(self, "_log_line_count", 0) + 1
-                if self._log_line_count > getattr(self, "_log_trim_threshold", 1200):
-                    keep_lines = getattr(self, "_log_keep_lines", 800)
-                    self.log_box.delete("1.0", f"end-{keep_lines + 1}lines")
-                    self._log_line_count = keep_lines
-                self.log_box.see("end")
-                self.log_box.configure(state="disabled")
+                self.after(100, self._flush_logs)
             except Exception:
-                pass
-        self.ui_call(write_ui)
+                self._log_flush_scheduled = False
+
+    def _flush_logs(self):
+        """批量渲染待处理日志（UI 线程，100ms 节流）"""
+        self._log_flush_scheduled = False
+        pending = self._log_pending
+        self._log_pending = []
+        try:
+            if pending:
+                current_filter = getattr(self, "log_level_var", None)
+                filter_level = current_filter.get() if current_filter else "ALL"
+                if filter_level != "ALL":
+                    pending = [(lvl, msg) for lvl, msg in pending if lvl == filter_level]
+                if pending:
+                    self.log_box.configure(state="normal")
+                    self.log_box.insert("end", "".join(msg + "\n" for _, msg in pending))
+                    self._log_line_count = getattr(self, "_log_line_count", 0) + len(pending)
+                    if self._log_line_count > getattr(self, "_log_trim_threshold", 1200):
+                        keep_lines = getattr(self, "_log_keep_lines", 800)
+                        self.log_box.delete("1.0", f"end-{keep_lines + 1}lines")
+                        self._log_line_count = keep_lines
+                    self.log_box.see("end")
+                    self.log_box.configure(state="disabled")
+        except Exception:
+            pass
+        # 渲染期间新到的消息再约一轮（不丢日志）
+        if self._log_pending and not self._log_flush_scheduled:
+            self._log_flush_scheduled = True
+            try:
+                self.after(100, self._flush_logs)
+            except Exception:
+                self._log_flush_scheduled = False
 
     def _apply_log_filter(self, choice=None):
         """根据级别筛选重新渲染日志框。"""

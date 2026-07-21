@@ -46,6 +46,7 @@ _TOGGLE_SETTLE = 0.8      # Enter 勾选后等待
 _MAX_PAGES = 14           # 单轮搜索最大翻页数（整表约 66 个可聚焦行，半页步进足够两轮）
 _MAX_CORRECTION = 8       # 偏移校正最大扫描步数（单方向）
 _CLICK_DIFF_THRESHOLD = 120.0  # 点击勾选验证：复选框区域平均像素差阈值（实测成功勾选差值 220~235，留足防误判余量）
+FILTER_DET_MAX_SIDE = 416  # 筛选面板 OCR 的 det 长边上限（面板 555×540 缩到 ~416，菜单文字 28px→21px 足够识别，det 耗时 -40%）
 
 
 def _norm_text(t):
@@ -155,7 +156,7 @@ class FilterNavMixin:
         if engine is None:
             return []
         try:
-            lines = engine.detect_lines_in_region(panel)
+            lines = engine.detect_lines_in_region(panel, max_side=FILTER_DET_MAX_SIDE)
         except Exception as e:
             self.log(f"[FilterNav] OCR 行检测异常: {e}", level="ERROR")
             return []

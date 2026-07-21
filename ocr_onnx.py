@@ -17,6 +17,7 @@ PP-OCRv6 tiny ONNX OCR 引擎（det + rec 完整流程）
 """
 import os
 import time
+import threading
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -38,11 +39,12 @@ TEXT_REGION = {
 }
 
 REC_IMG_H = 48
-REC_MAX_W = 320
+REC_MAX_W = 240  # v1.2.10.1: 320 -> 240（菜单文字行最长约 13 个汉字，240px 宽足够，rec 耗时 -20~25%）
 
 # detection 预处理参数（来自 inference.yml）
 DET_MEAN = [0.485, 0.456, 0.406]
 DET_STD = [0.229, 0.224, 0.225]
+DET_MAX_SIDE = 960  # det 输入默认长边上限（只缩不放）；调用方可传 max_side 覆盖（如筛选面板传 416）
 # detection 后处理参数（来自 inference.yml）
 DET_THRESH = 0.2
 DET_BOX_THRESH = 0.4
@@ -59,6 +61,12 @@ class OCREngine:
         self.det_session = None
         self.chars = None
         self.use_directml = use_directml
+        # det 预处理缓冲缓存：按 (h, w) 复用 resize 输出 + 归一化 CHW 缓冲，
+        # 省掉每次调用的内存分配 + transpose 拷贝（同尺寸输入高频调用时累积可观）
+        self._det_bufs = {}
+        self._det_buf_lock = threading.Lock()
+        self._det_mean = np.array(DET_MEAN, dtype=np.float32)
+        self._det_std = np.array(DET_STD, dtype=np.float32)
 
     def _create_session(self, model_path):
         """创建 ONNX session，带 CPU 限流和 DirectML 选项"""
@@ -111,25 +119,35 @@ class OCREngine:
     # Detection 预处理 + 后处理（DB 算法）
     # ==========================================
 
-    def _det_preprocess(self, img):
-        """detection 模型预处理：resize + normalize + toCHW"""
+    def _det_preprocess(self, img, max_side=None):
+        """detection 模型预处理：resize + normalize + toCHW（缓冲复用，零分配）"""
         h, w = img.shape[:2]
-        # 限制最大尺寸，保持比例
-        max_side = 960
-        ratio = min(max_side / h, max_side / w, 1.0)
+        # 限制最大尺寸，保持比例（只缩不放）
+        ms = max_side if max_side else DET_MAX_SIDE
+        ratio = min(ms / h, ms / w, 1.0)
         new_h, new_w = int(h * ratio), int(w * ratio)
         # 确保尺寸为 32 的倍数
         new_h = max(32, (new_h // 32) * 32)
         new_w = max(32, (new_w // 32) * 32)
-        resized = cv2.resize(img, (new_w, new_h))
 
-        # normalize
-        inp = resized.astype(np.float32) / 255.0
-        inp = (inp - np.array(DET_MEAN)) / np.array(DET_STD)
-        # to CHW
-        inp = inp.transpose(2, 0, 1)
-        inp = np.ascontiguousarray(inp[np.newaxis, ...], dtype=np.float32)
-        return inp, (h, w, new_h, new_w)
+        with self._det_buf_lock:
+            key = (new_h, new_w)
+            bufs = self._det_bufs.get(key)
+            if bufs is None:
+                bufs = (
+                    np.empty((new_h, new_w, 3), dtype=np.uint8),       # resize 输出缓冲
+                    np.empty((1, 3, new_h, new_w), dtype=np.float32),  # 归一化 CHW 输入缓冲
+                )
+                self._det_bufs[key] = bufs
+            resized, chw = bufs
+            cv2.resize(img, (new_w, new_h), dst=resized)
+            # 逐通道写入 CHW 缓冲：/255 -> -mean -> /std，全程 in-place 无分配
+            chw3 = chw[0]
+            for c in range(3):
+                np.divide(resized[:, :, c], 255.0, out=chw3[c], dtype=np.float32)
+                chw3[c] -= self._det_mean[c]
+                chw3[c] /= self._det_std[c]
+            return chw, (h, w, new_h, new_w)
 
     def _det_postprocess(self, pred, orig_h, orig_w, resized_h, resized_w):
         """DB 后处理：从 score map 提取文字框"""
@@ -241,12 +259,13 @@ class OCREngine:
     # 完整 det + rec 流程
     # ==========================================
 
-    def detect(self, image):
+    def detect(self, image, max_side=None):
         """
         完整 OCR 检测：detection 找文字区域 -> recognition 识别文字
 
         Args:
             image: BGR numpy array（完整游戏截图）
+            max_side: det 输入长边上限（None 用默认 960，只缩不放）
 
         Returns:
             dict: {"status": "win|fail|unknown", "text": "...", "boxes": [...]}
@@ -262,7 +281,7 @@ class OCREngine:
         # ====== 1. Detection：找文字区域（失败回退固定区域） ======
         boxes = None
         try:
-            det_inp, (orig_h, orig_w, new_h, new_w) = self._det_preprocess(image)
+            det_inp, (orig_h, orig_w, new_h, new_w) = self._det_preprocess(image, max_side)
             det_out = self.det_session.run(None, {"x": det_inp})
             boxes = self._det_postprocess(det_out[0], orig_h, orig_w, new_h, new_w)
         except Exception as e:
@@ -315,7 +334,7 @@ class OCREngine:
 
         return {"status": status, "text": combined, "boxes": boxes}
 
-    def detect_text_in_region(self, image, region_ratio=None):
+    def detect_text_in_region(self, image, region_ratio=None, max_side=None):
         """
         对指定区域跑 OCR，返回识别到的文字（不做 win/fail 判定）
 
@@ -323,6 +342,7 @@ class OCREngine:
             image: BGR numpy array（完整截图）
             region_ratio: dict with y_start, y_end, x_start, x_end (0~1 比例)
                          None 表示全图
+            max_side: det 输入长边上限（None 用默认 960，只缩不放）
 
         Returns:
             str: 识别到的文字（空格分隔各区域）
@@ -346,7 +366,7 @@ class OCREngine:
         # detection（失败则对整个裁剪区域跑 rec）
         boxes = None
         try:
-            det_inp, (orig_h, orig_w, new_h, new_w) = self._det_preprocess(image)
+            det_inp, (orig_h, orig_w, new_h, new_w) = self._det_preprocess(image, max_side)
             det_out = self.det_session.run(None, {"x": det_inp})
             boxes = self._det_postprocess(det_out[0], orig_h, orig_w, new_h, new_w)
         except Exception as e:
@@ -377,7 +397,7 @@ class OCREngine:
 
         return " ".join(all_texts)
 
-    def detect_lines_in_region(self, image, region_ratio=None):
+    def detect_lines_in_region(self, image, region_ratio=None, max_side=None):
         """
         对指定区域跑 OCR，返回逐行结果（文字 + 坐标）
 
@@ -388,6 +408,7 @@ class OCREngine:
             image: BGR numpy array（完整截图）
             region_ratio: dict with y_start, y_end, x_start, x_end (0~1 比例)
                          None 表示全图
+            max_side: det 输入长边上限（None 用默认 960，只缩不放）
 
         Returns:
             list[dict]: 按 y 从上到下排序，每项 {"text": str, "box": (x1, y1, x2, y2)}
@@ -412,7 +433,7 @@ class OCREngine:
         # detection
         boxes = None
         try:
-            det_inp, (orig_h, orig_w, new_h, new_w) = self._det_preprocess(image)
+            det_inp, (orig_h, orig_w, new_h, new_w) = self._det_preprocess(image, max_side)
             det_out = self.det_session.run(None, {"x": det_inp})
             boxes = self._det_postprocess(det_out[0], orig_h, orig_w, new_h, new_w)
         except Exception as e:

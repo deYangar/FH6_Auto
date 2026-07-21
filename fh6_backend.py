@@ -206,46 +206,107 @@ class BackgroundInputManager:
             time.sleep(0.05)
 
 
-def capture_window(hwnd, region=None, window_offset=(0, 0)):
-    """后台截图窗口客户区（PrintWindow flag=3）"""
-    left, top, right, bot = win32gui.GetClientRect(hwnd)
-    w, h = right - left, bot - top
-    if w <= 0 or h <= 0:
-        return None
+# ====== 后台截图（PrintWindow flag=3）======
+# DC/位图缓存：同一窗口同尺寸复用 GDI 对象，省掉每帧 CreateCompatibleDC/CreateCompatibleBitmap（约 1ms/帧）
+_capture_cache = {"hwnd": None, "w": 0, "h": 0, "hwnd_dc": None, "mfc_dc": None, "save_dc": None, "bmp": None}
+_capture_lock = threading.Lock()
 
-    hwnd_dc = win32gui.GetWindowDC(hwnd)
-    mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
-    save_dc = mfc_dc.CreateCompatibleDC()
-    bmp = win32ui.CreateBitmap()
-    bmp.CreateCompatibleBitmap(mfc_dc, w, h)
-    save_dc.SelectObject(bmp)
+
+def _release_capture_cache():
+    """释放缓存的 GDI 对象（调用方需持有 _capture_lock）"""
+    c = _capture_cache
+    for cleanup in (
+        lambda: win32gui.DeleteObject(c["bmp"].GetHandle()) if c["bmp"] is not None else None,
+        lambda: c["save_dc"].DeleteDC() if c["save_dc"] is not None else None,
+        lambda: c["mfc_dc"].DeleteDC() if c["mfc_dc"] is not None else None,
+        lambda: win32gui.ReleaseDC(c["hwnd"], c["hwnd_dc"]) if c["hwnd"] and c["hwnd_dc"] else None,
+    ):
+        try:
+            cleanup()
+        except Exception:
+            pass
+    c.update(hwnd=None, w=0, h=0, hwnd_dc=None, mfc_dc=None, save_dc=None, bmp=None)
+
+
+def _capture_once(hwnd, w, h, use_cache):
+    """单次截图。use_cache=True 复用缓存 DC/位图；失败抛异常由调用方处理。"""
+    c = _capture_cache
+    if use_cache and c["hwnd"] == hwnd and c["w"] == w and c["h"] == h and c["save_dc"] is not None:
+        save_dc, bmp = c["save_dc"], c["bmp"]
+    else:
+        if use_cache:
+            _release_capture_cache()
+        hwnd_dc = win32gui.GetWindowDC(hwnd)
+        mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+        save_dc = mfc_dc.CreateCompatibleDC()
+        bmp = win32ui.CreateBitmap()
+        bmp.CreateCompatibleBitmap(mfc_dc, w, h)
+        save_dc.SelectObject(bmp)
+        if use_cache:
+            c.update(hwnd=hwnd, w=w, h=h, hwnd_dc=hwnd_dc, mfc_dc=mfc_dc, save_dc=save_dc, bmp=bmp)
+        else:
+            # 不复用：用完即弃（异常路径兜底）
+            try:
+                ok = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), PW_RENDERFULLCONTENT)
+                if ok != 1:
+                    return None
+                bits = bmp.GetBitmapBits(True)
+                arr = np.frombuffer(bits, dtype=np.uint8).reshape((h, w, 4))
+                return arr[:, :, :3].copy()
+            finally:
+                try:
+                    win32gui.DeleteObject(bmp.GetHandle())
+                    save_dc.DeleteDC()
+                    mfc_dc.DeleteDC()
+                    win32gui.ReleaseDC(hwnd, hwnd_dc)
+                except Exception:
+                    pass
 
     ok = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), PW_RENDERFULLCONTENT)
-
     if ok != 1:
-        win32gui.DeleteObject(bmp.GetHandle())
-        save_dc.DeleteDC()
-        mfc_dc.DeleteDC()
-        win32gui.ReleaseDC(hwnd, hwnd_dc)
         return None
+    bits = bmp.GetBitmapBits(True)
+    arr = np.frombuffer(bits, dtype=np.uint8).reshape((h, w, 4))
+    return arr[:, :, :3].copy()
 
-    bmp_bits = bmp.GetBitmapBits(True)
-    arr = np.frombuffer(bmp_bits, dtype=np.uint8).reshape((h, w, 4))
-    screen_bgr = arr[:, :, :3].copy()
 
-    win32gui.DeleteObject(bmp.GetHandle())
-    save_dc.DeleteDC()
-    mfc_dc.DeleteDC()
-    win32gui.ReleaseDC(hwnd, hwnd_dc)
+def capture_window(hwnd, region=None, window_offset=(0, 0)):
+    """后台截图窗口客户区（PrintWindow flag=3）。
 
-    if region:
-        rx, ry, rw, rh = region
-        wx, wy = window_offset
-        rel_x = max(0, min(rx - wx, w))
-        rel_y = max(0, min(ry - wy, h))
-        rel_x2 = min(rel_x + rw, w)
-        rel_y2 = min(rel_y + rh, h)
-        if rel_x2 > rel_x and rel_y2 > rel_y:
-            screen_bgr = screen_bgr[rel_y:rel_y2, rel_x:rel_x2]
+    任何 GDI 异常都不会上抛：缓存路径失败 -> 释放缓存 -> 全新对象重试一次 -> 仍失败返回 None。
+    调用方（vision.capture_region）已处理 None 返回值。
+    """
+    with _capture_lock:
+        try:
+            left, top, right, bot = win32gui.GetClientRect(hwnd)
+            w, h = right - left, bot - top
+            if w <= 0 or h <= 0:
+                return None
 
-    return screen_bgr
+            try:
+                screen_bgr = _capture_once(hwnd, w, h, use_cache=True)
+            except Exception:
+                # 缓存的 GDI 对象可能失效（窗口重建/显示模式变化）：释放后全新重试一次
+                _release_capture_cache()
+                try:
+                    screen_bgr = _capture_once(hwnd, w, h, use_cache=False)
+                except Exception:
+                    return None
+
+            if screen_bgr is None:
+                return None
+
+            if region:
+                rx, ry, rw, rh = region
+                wx, wy = window_offset
+                rel_x = max(0, min(rx - wx, w))
+                rel_y = max(0, min(ry - wy, h))
+                rel_x2 = min(rel_x + rw, w)
+                rel_y2 = min(rel_y + rh, h)
+                if rel_x2 > rel_x and rel_y2 > rel_y:
+                    screen_bgr = screen_bgr[rel_y:rel_y2, rel_x:rel_x2]
+
+            return screen_bgr
+        except Exception:
+            # GetClientRect 失败（窗口已销毁等）
+            return None

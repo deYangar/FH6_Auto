@@ -949,6 +949,10 @@ class VisionMixin:
                         )
                     continue
 
+                # 灰度/边缘兜底用的模板特征：每个 scale 只算一次（v1.2.10.1：原代码在每个候选循环内重复 cvtColor+Canny）
+                tpl_gray_cache = None
+                tpl_edge_cache = None
+
                 for car_x, car_y, car_score in candidates:
                     # --- 2a: 判断车卡是否可信（彩色优先，灰度+边缘兜底）---
                     is_card_valid = False
@@ -961,14 +965,15 @@ class VisionMixin:
                         try:
                             patch = screen_bgr[car_y:car_y + h_m, car_x:car_x + w_m]
                             if patch.shape[:2] == main_tpl.shape[:2]:
-                                tpl_gray = cv2.cvtColor(main_tpl, cv2.COLOR_BGR2GRAY)
+                                if tpl_gray_cache is None:
+                                    tpl_gray_cache = cv2.cvtColor(main_tpl, cv2.COLOR_BGR2GRAY)
+                                    tpl_edge_cache = cv2.Canny(tpl_gray_cache, 60, 160)
                                 cand_gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
                                 _, gray_score, _, _ = cv2.minMaxLoc(
-                                    cv2.matchTemplate(cand_gray, tpl_gray, cv2.TM_CCOEFF_NORMED))
-                                tpl_edge = cv2.Canny(tpl_gray, 60, 160)
+                                    cv2.matchTemplate(cand_gray, tpl_gray_cache, cv2.TM_CCOEFF_NORMED))
                                 cand_edge = cv2.Canny(cand_gray, 60, 160)
                                 _, edge_score, _, _ = cv2.minMaxLoc(
-                                    cv2.matchTemplate(cand_edge, tpl_edge, cv2.TM_CCOEFF_NORMED))
+                                    cv2.matchTemplate(cand_edge, tpl_edge_cache, cv2.TM_CCOEFF_NORMED))
                                 if gray_score >= MAIN_GRAY_THRESHOLD and edge_score >= MAIN_EDGE_THRESHOLD:
                                     is_card_valid = True
                         except Exception:
