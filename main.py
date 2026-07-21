@@ -102,6 +102,8 @@ class FH_UltimateBot(
 
         self.init_regions()
         self._log_buffer = []  # 提前初始化，避免后台线程竞态
+        self._log_pending = []  # 待渲染日志批（100ms 节流刷新，必须在首次 log() 前初始化）
+        self._log_flush_scheduled = False
 
         # 【优化加载速度】:将IO提取与图像缓存的加载/生成放到后台线程,避免阻塞主界面启动
         # 增加模型释放步骤
