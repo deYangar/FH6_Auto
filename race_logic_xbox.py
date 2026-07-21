@@ -11,12 +11,10 @@ import json
 import threading
 import traceback
 import cv2
-import numpy as np
 from config import APP_DIR
 from recognition_config import get_recognition_profile
 from ocr_onnx import OCREngine
 from filter_nav import DEFAULT_RACE_FILTER
-from constants import DIK_CODES
 
 
 class RaceMixin:

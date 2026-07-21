@@ -16,7 +16,6 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # =======================================
 import json
 import time
-import ctypes
 import tkinter as tk
 import customtkinter as ctk
 ctk.deactivate_automatic_dpi_awareness()
@@ -26,19 +25,15 @@ import cv2
 import pyautogui
 import pydirectinput
 from pynput import keyboard
-from PIL import Image, ImageGrab
-import win32gui
 import threading
-import fh6_backend
 import focus_hook_manager
 
 from config import (
-    APP_DIR, INTERNAL_DIR, USER_CONFIG_FILE, LOG_FILE,
-    CACHE_DIR, TEMPLATE_CACHE_FILE, TEMPLATE_META_FILE, CURRENT_VERSION,
-    auto_extract_configs, auto_extract_images, get_img_path, get_asset_path,
+    APP_DIR, INTERNAL_DIR, USER_CONFIG_FILE, CURRENT_VERSION,
+    auto_extract_configs, auto_extract_images, get_asset_path,
     set_scheme_dir
 )
-from constants import DIK_CODES, MATCH_THRESHOLD
+from constants import DIK_CODES
 from input_handler import InputMixin
 from vision import VisionMixin
 from recovery import RecoveryMixin
@@ -1204,18 +1199,6 @@ class FH_UltimateBot(
         self.le_restart_cmd = ctk.CTkEntry(self.global_settings_frame, height=28, corner_radius=6)
         self.le_restart_cmd.insert(0, self.config.get("restart_cmd", "start steam://run/2483190"))
         self.le_restart_cmd.pack(side="left", fill="x", expand=True, padx=(0, 14))
-        # ====== 【新增】:测试自动开机流程按钮 ======
-        self.btn_test_boot = ctk.CTkButton(
-            self.global_settings_frame,
-            text="测试启动流程",
-            fg_color="#8E44AD",
-            hover_color="#7D3C98",
-            width=110,
-            height=28,
-            command=self.start_test_boot
-        )
-        # =================================
-
 
         # ====== 运行监控栏 ======
         self.runtime_frame = ctk.CTkFrame(self, fg_color="#18202B", height=64, corner_radius=8)

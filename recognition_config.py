@@ -1,6 +1,3 @@
-import copy
-
-
 DEFAULT_RECOGNITION_PROFILES = {
     "buy.collectionjournal": {"threshold": 0.70, "timeout": 30, "interval": 0.4, "fast_mode": True},
     "buy.masterexplorer": {"threshold": 0.75, "timeout": 30, "interval": 0.4, "fast_mode": True},

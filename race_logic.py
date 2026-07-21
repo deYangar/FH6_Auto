@@ -4,7 +4,6 @@ import os
 import json
 import threading
 import cv2
-import numpy as np
 from constants import DIK_CODES
 from config import APP_DIR
 from recognition_config import get_recognition_profile

@@ -2,11 +2,9 @@ import ctypes
 import time
 import subprocess
 import win32gui
-import json
 import os
 import cv2
 import fh6_backend
-from config import APP_DIR
 
 
 class RecoveryMixin:

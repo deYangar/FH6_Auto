@@ -1,10 +1,7 @@
 import sys
 import os
-import json
 import shutil
 import ctypes
-import subprocess
-import tkinter as tk
 
 def check_windows_dependencies():
     if sys.platform != "win32":
