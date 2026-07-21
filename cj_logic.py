@@ -30,45 +30,52 @@ class CJMixin:
             self.log(f"检测上车过场异常: {e}")
             return False
 
-    def _save_upgrade_debug(self, stage, pos_uandt=None, pos_cls=None, note="", extra=None):
-        """保存上车后“升级与调校/车辆专精”阶段调试截图。"""
+    def _save_point_debug(self, root_name, log_tag, stage, points=None, note="", extra=None):
+        """
+        通用调试截图（v1.2.10.4 从 _save_car_select_debug/_save_upgrade_debug 抽取）：
+        全屏原图 + 标注图（每个点画圆圈+标签）+ meta.json。
+
+        points: [(pos, label, color), ...]，pos 为屏幕坐标（自动换算窗口客户区坐标）。
+        """
         if hasattr(self, "is_debug_screenshots_enabled") and not self.is_debug_screenshots_enabled():
             return
         try:
-            debug_root = os.path.join(APP_DIR, "debug_upgrade_flow")
+            debug_root = os.path.join(APP_DIR, root_name)
             os.makedirs(debug_root, exist_ok=True)
             stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
-            out_dir = os.path.join(debug_root, f"{stamp}_{stage}")
+            safe_stage = str(stage).replace(" ", "_")
+            out_dir = os.path.join(debug_root, f"{stamp}_{safe_stage}")
             os.makedirs(out_dir, exist_ok=True)
 
             img = self.capture_region(self.regions["全界面"])
             meta = {
                 "stage": stage,
                 "note": note,
-                "pos_uandt": list(pos_uandt) if pos_uandt else None,
-                "pos_cls": list(pos_cls) if pos_cls else None,
+                "points": {label: (list(pos) if pos else None) for pos, label, _ in (points or [])},
                 "extra": extra or {},
             }
             if img is not None:
                 annotated = img.copy()
                 gx, gy, _, _ = self.regions["全界面"]
-                if pos_uandt:
-                    x = int(pos_uandt[0] - gx)
-                    y = int(pos_uandt[1] - gy)
-                    cv2.circle(annotated, (x, y), 18, (0, 0, 255), 3)
-                    cv2.putText(annotated, "UandT_click", (max(5, x - 70), max(25, y - 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                if pos_cls:
-                    x = int(pos_cls[0] - gx)
-                    y = int(pos_cls[1] - gy)
-                    cv2.circle(annotated, (x, y), 18, (0, 255, 0), 3)
-                    cv2.putText(annotated, "mastery_click", (max(5, x - 70), max(25, y - 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                for pos, label, color in (points or []):
+                    if not pos:
+                        continue
+                    x, y = int(pos[0] - gx), int(pos[1] - gy)
+                    cv2.circle(annotated, (x, y), 18, color, 3)
+                    cv2.putText(annotated, label, (max(5, x - 70), max(25, y - 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                 cv2.imwrite(os.path.join(out_dir, "screen_annotated.png"), annotated)
                 cv2.imwrite(os.path.join(out_dir, "screen_raw.png"), img)
             with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
                 json.dump(meta, f, ensure_ascii=False, indent=2)
-            self.log(f"[UpgradeDebug] {stage} 已保存: {out_dir}")
+            self.log(f"[{log_tag}] {stage} 已保存: {out_dir}")
         except Exception as e:
-            self.log(f"[UpgradeDebug] 保存失败({stage}): {e}")
+            self.log(f"[{log_tag}] 保存失败({stage}): {e}")
+
+    def _save_upgrade_debug(self, stage, pos_uandt=None, pos_cls=None, note="", extra=None):
+        """上车后"升级与调校/车辆专精"阶段调试截图（签名兼容，转发通用方法）"""
+        self._save_point_debug("debug_upgrade_flow", "UpgradeDebug", stage,
+            points=[(pos_uandt, "UandT_click", (0, 0, 255)), (pos_cls, "mastery_click", (0, 255, 0))],
+            note=note, extra=extra)
 
     def _wait_for_uandt_ready(self, timeout=12.0, stable_frames=3, min_brightness=42.0, press_esc_when_missing=False):
         """等待"升级与调校"所在车辆菜单真正加载稳定。
@@ -249,48 +256,10 @@ class CJMixin:
         return True
 
     def _save_car_select_debug(self, stage, pos_target=None, pos_rc=None, note="", extra=None):
-        """保存超级抽奖“识别到车 -> 点击选车 -> 上车按钮”阶段调试截图。"""
-        if hasattr(self, "is_debug_screenshots_enabled") and not self.is_debug_screenshots_enabled():
-            return
-        try:
-            debug_root = os.path.join(APP_DIR, "debug_car_select")
-            os.makedirs(debug_root, exist_ok=True)
-            stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
-            safe_stage = str(stage).replace(" ", "_")
-            out_dir = os.path.join(debug_root, f"{stamp}_{safe_stage}")
-            os.makedirs(out_dir, exist_ok=True)
-
-            img = self.capture_region(self.regions["全界面"])
-            meta = {
-                "stage": stage,
-                "note": note,
-                "pos_target": list(pos_target) if pos_target else None,
-                "pos_rc": list(pos_rc) if pos_rc else None,
-                "extra": extra or {},
-            }
-
-            if img is not None:
-                annotated = img.copy()
-                gx, gy, gw, gh = self.regions["全界面"]
-                if pos_target:
-                    tx = int(pos_target[0] - gx)
-                    ty = int(pos_target[1] - gy)
-                    cv2.circle(annotated, (tx, ty), 18, (0, 0, 255), 3)
-                    cv2.putText(annotated, "target_click", (max(5, tx - 60), max(25, ty - 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                if pos_rc:
-                    rx = int(pos_rc[0] - gx)
-                    ry = int(pos_rc[1] - gy)
-                    cv2.circle(annotated, (rx, ry), 18, (0, 255, 0), 3)
-                    cv2.putText(annotated, "rc_button", (max(5, rx - 45), max(25, ry - 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-                cv2.imwrite(os.path.join(out_dir, "screen_annotated.png"), annotated)
-                cv2.imwrite(os.path.join(out_dir, "screen_raw.png"), img)
-
-            with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-            self.log(f"[CarSelectDebug] {stage} 已保存: {out_dir}")
-        except Exception as e:
-            self.log(f"[CarSelectDebug] 保存失败({stage}): {e}")
+        """超级抽奖"识别到车 -> 点击选车 -> 上车按钮"阶段调试截图（签名兼容，转发通用方法）"""
+        self._save_point_debug("debug_car_select", "CarSelectDebug", stage,
+            points=[(pos_target, "target_click", (0, 0, 255)), (pos_rc, "rc_button", (0, 255, 0))],
+            note=note, extra=extra)
 
     def logic_super_wheelspin(self, target_count):
         if self.cj_counter >= target_count:

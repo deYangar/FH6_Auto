@@ -47,6 +47,16 @@ from filter_nav import (
     DEFAULT_SELL_FILTER_SCHEME1, DEFAULT_SELL_FILTER_SCHEME2, DEFAULT_RACE_FILTER,
 )
 
+# 方案同步字段清单：_sync_to_current_scheme 把顶层配置写回当前方案时用。
+# 注意：save_config() 里用控件保存的字段必须与此清单保持一致（新增方案字段时两处同改）。
+# sell_filter/race_filter 是方案独有字段（无顶层控件），不在此清单。
+SCHEME_SYNC_FIELDS = [
+    "class_image", "race_count", "buy_count", "cj_count",
+    "sell_count", "skill_dirs", "share_code", "cj_mode",
+    "chk_1", "chk_2", "chk_3", "chk_4",
+    "next_1", "next_2", "next_3", "next_4",
+]
+
 pyautogui.FAILSAFE = False
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -489,20 +499,24 @@ class FH_UltimateBot(
     # ====== 方案管理 ======
 
     def _sync_to_current_scheme(self):
-        """将当前顶层配置同步到当前方案"""
+        """将当前顶层配置同步到当前方案（字段清单见 SCHEME_SYNC_FIELDS）"""
         idx = self.config.get("current_scheme", 0)
         schemes = self.config.get("schemes", [])
         if idx < 0 or idx >= len(schemes):
             return
         scheme = schemes[idx]
-        for k in [
-            "class_image", "race_count", "buy_count", "cj_count",
-            "sell_count", "skill_dirs", "share_code", "cj_mode",
-            "chk_1", "chk_2", "chk_3", "chk_4",
-            "next_1", "next_2", "next_3", "next_4"
-        ]:
+        for k in SCHEME_SYNC_FIELDS:
             if k in self.config:
                 scheme[k] = self.config[k]
+
+    def clear_template_caches(self):
+        """清空所有模板缓存（切换/删除方案时调用，避免跨方案模板混用）"""
+        self.template_cache.clear()
+        self.scaled_template_cache.clear()
+        if hasattr(self, "template_gray_cache"):
+            self.template_gray_cache.clear()
+        if hasattr(self, "template_transparent_cache"):
+            self.template_transparent_cache.clear()
 
     def refresh_scheme_menu(self):
         """刷新方案下拉菜单"""
@@ -542,12 +556,7 @@ class FH_UltimateBot(
         # 更新图片目录
         set_scheme_dir(f"scheme_{idx + 1}")
         # 清除内存模板缓存
-        self.template_cache.clear()
-        self.scaled_template_cache.clear()
-        if hasattr(self, "template_gray_cache"):
-            self.template_gray_cache.clear()
-        if hasattr(self, "template_transparent_cache"):
-            self.template_transparent_cache.clear()
+        self.clear_template_caches()
         # 应用到 UI
         self.apply_scheme_to_ui(scheme)
         # 保存
@@ -654,12 +663,7 @@ class FH_UltimateBot(
         for k, v in schemes[new_idx].items():
             self.config[k] = v
         set_scheme_dir(f"scheme_{new_idx + 1}")
-        self.template_cache.clear()
-        self.scaled_template_cache.clear()
-        if hasattr(self, "template_gray_cache"):
-            self.template_gray_cache.clear()
-        if hasattr(self, "template_transparent_cache"):
-            self.template_transparent_cache.clear()
+        self.clear_template_caches()
         self.refresh_scheme_menu()
         self.apply_scheme_to_ui(schemes[new_idx])
         self.save_config()

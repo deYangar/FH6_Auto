@@ -450,28 +450,11 @@ class RaceMixin:
         self.hw_press("enter")  # 选中筛出的车辆
         time.sleep(1.0)
 
-        # OCR 检测"上车"（中心区域，比例换算自 1600*900 下 558*287 居中矩形）
-        ocr_engine = self.get_ocr_engine()
-        img = self.capture_region(self.regions["全界面"])
-        text = ""
-        if img is not None and ocr_engine:
-            text = ocr_engine.detect_text_in_region(img, {
-                "y_start": 0.34,
-                "y_end": 0.66,
-                "x_start": 0.325,
-                "x_end": 0.675,
-            })
-        if "上车" in text:
-            self.log(f"OCR 识别到'上车'，按 Enter 上车 (text={text})")
-            self.hw_press("enter")
-            time.sleep(4.0)
+        # OCR 检测"上车"（v1.2.10.4: 共享方法 ocr_detect_boarding）
+        if self.ocr_detect_boarding("跑图选车", enter_wait=4.0, esc_gap=0.7):
             self.log("选车完成,等待5秒后开始跑图...")
             time.sleep(5.0)
         else:
-            self.log(f"OCR 未识别到'上车'，车辆已在驾驶 (text={text})")
-            self.hw_press("esc")
-            time.sleep(0.7)
-            self.hw_press("esc")
             time.sleep(1.0)
 
         # ====== 阶段1~5：进入主菜单→EventLab→分享码→蓝图→进入赛事 ======

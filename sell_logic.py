@@ -63,26 +63,8 @@ class SellMixin:
         self.move_to_game_coord(5, 5)
         time.sleep(0.2)
 
-        # ====== 上车检测：OCR 中心区域检测"上车" ======
-        ocr_engine = self.get_ocr_engine()
-        img = self.capture_region(self.regions["全界面"])
-        text = ""
-        if img is not None and ocr_engine:
-            text = ocr_engine.detect_text_in_region(img, {
-                "y_start": 0.34,
-                "y_end": 0.66,
-                "x_start": 0.325,
-                "x_end": 0.675,
-            })
-        if "上车" in text:
-            self.log(f"OCR 识别到'上车'，按 Enter 上车 (text={text})")
-            self.hw_press("enter")
-            time.sleep(2.0)
-        else:
-            self.log(f"OCR 未识别到'上车'，车辆已在驾驶 (text={text})")
-            self.hw_press("esc")
-            time.sleep(1.5)
-            self.hw_press("esc")
+        # ====== 上车检测：OCR 中心区域检测"上车"（v1.2.10.4: 共享方法）======
+        self.ocr_detect_boarding("删车", enter_wait=2.0, esc_gap=1.5)
         time.sleep(2.0)
 
         # 等待购买与出售界面出现

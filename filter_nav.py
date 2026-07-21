@@ -115,6 +115,38 @@ class FilterNavMixin:
                 return [str(t) for t in val]
         return None
 
+    # ============ 共享 OCR 检测 ============
+
+    def ocr_detect_boarding(self, label="上车检测", enter_wait=4.0, esc_gap=0.7):
+        """
+        OCR 中心区域检测"上车"按钮并行动（v1.2.10.4 从三处重复代码抽取）：
+        识别到 -> Enter 上车，等待 enter_wait 秒，返回 True；
+        未识别 -> 车辆已在驾驶，ESC×2 退出，返回 False。
+
+        中心区域比例换算自 1600×900 下 558×287 居中矩形。
+        调用方：跑图选车（Steam/Xbox）、删车驾驶收藏车。
+        """
+        ocr_engine = self.get_ocr_engine()
+        img = self.capture_region(self.regions["全界面"])
+        text = ""
+        if img is not None and ocr_engine:
+            text = ocr_engine.detect_text_in_region(img, {
+                "y_start": 0.34,
+                "y_end": 0.66,
+                "x_start": 0.325,
+                "x_end": 0.675,
+            })
+        if "上车" in text:
+            self.log(f"[{label}] OCR 识别到'上车'，按 Enter 上车 (text={text})")
+            self.hw_press("enter")
+            time.sleep(enter_wait)
+            return True
+        self.log(f"[{label}] OCR 未识别到'上车'，车辆已在驾驶 (text={text})")
+        self.hw_press("esc")
+        time.sleep(esc_gap)
+        self.hw_press("esc")
+        return False
+
     # ============ 面板打开检测 ============
 
     def _wait_for_filter_panel(self, press_y=True, timeout=3.0):
