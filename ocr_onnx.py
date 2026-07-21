@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-PP-OCRv6 tiny ONNX OCR 引擎（det + rec 完整流程）
+PP-OCRv6 ONNX OCR 引擎（det + rec 完整流程）
 
 针对 Forza Horizon 6 比赛结果画面优化：
 - detection 模型自动找到画面中的文字区域
@@ -24,15 +24,12 @@ import onnxruntime as ort
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# OCR 模型变体："small" 识别率更高 / "tiny" 更快（默认）；
-# 实测（v1.2.10.6）：筛选面板目标词 tiny 已 100% 命中，small 慢 2.4 倍且无准确率收益 -> 换回 tiny。
-# small 独有能力：复选框 □/☑ 状态识别（以后低频验证场景可 OCREngine(variant="small") 单独挂载）。
-# small 模型缺失时自动回退 tiny。
-OCR_MODEL_VARIANT = "tiny"
+# OCR 模型变体：默认 small（识别率高，tiny 错误率过高已移除）。
+OCR_MODEL_VARIANT = "small"
 
 
 def _pick_model_dir(kind, variant=None):
-    """选择 det/rec 模型目录。优先级：构造器指定 variant -> OCR_MODEL_VARIANT -> tiny。
+    """选择 det/rec 模型目录。优先级：构造器指定 variant -> OCR_MODEL_VARIANT -> small。
     返回 (目录, 实际变体名)。"""
     base = os.path.join(BASE_DIR, "onnx_models")
     candidates = []
@@ -40,8 +37,8 @@ def _pick_model_dir(kind, variant=None):
         candidates.append(variant)
     if OCR_MODEL_VARIANT not in candidates:
         candidates.append(OCR_MODEL_VARIANT)
-    if "tiny" not in candidates:
-        candidates.append("tiny")
+    if "small" not in candidates:
+        candidates.append("small")
     for v in candidates:
         d = os.path.join(base, f"PP-OCRv6_{v}_{kind}_onnx")
         if os.path.isfile(os.path.join(d, "inference.onnx")):
@@ -73,7 +70,7 @@ DET_MAX_CANDIDATES = 3000
 
 
 class OCREngine:
-    """PP-OCRv6 tiny det + rec ONNX 推理引擎"""
+    """PP-OCRv6 det + rec ONNX 推理引擎"""
 
     def __init__(self, log_func=None, use_directml=False, variant=None):
         self.log = log_func or (lambda msg: None)

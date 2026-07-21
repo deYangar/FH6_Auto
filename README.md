@@ -85,11 +85,11 @@
 - 界面提供"调试截图"勾选框,状态保存到 `config.json` 的 `debug_screenshots` 字段。
 - 默认关闭,避免长期运行产生大量文件。
 - 开启后才会生成:
-  - `debug_race_car_select/`
   - `debug_strict_car/`
   - `debug_car_select/`
   - `debug_upgrade_flow/`
   - `debug/miss/`（灰度匹配未命中截图）
+  - `debug/filter_nav/`（筛选导航 OCR 调试）
 
 ### Focus Hook 开关
 - 界面提供"Hook游戏窗口使其始终为焦点"勾选框，状态保存到 `config.json` 的 `focus_hook_enabled` 字段。
@@ -113,14 +113,13 @@
 ## 技术细节
 
 ### OCR 引擎
-- 模型: PP-OCRv6 tiny detection + recognition (ONNX 格式)
+- 模型: PP-OCRv6 small detection + recognition (ONNX 格式)
 - 来源: PaddlePaddle HuggingFace 官方预转换模型
-- Detection 模型: PP-OCRv6_tiny_det_onnx (1.78MB)
-- Recognition 模型: PP-OCRv6_tiny_rec_onnx (4.3MB)
+- Detection 模型: PP-OCRv6_small_det_onnx (9.4MB)
+- Recognition 模型: PP-OCRv6_small_rec_onnx (20.2MB, 字典 18708 字符)
 - 推理: onnxruntime (CPU) 或 onnxruntime-directml (GPU)
 - Detection 找文字区域 → Recognition 逐区域识别
 - Detection 失败时自动回退到固定区域 rec-only，不影响流程
-- CPU 推理 rec 耗时 ~3ms，DirectML GPU 推理 ~2ms
 
 ### CPU 优化
 - ONNX Runtime 线程限制为 `CPU核心数 / 2`
@@ -189,11 +188,42 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 ### v1.2.10.0 (2026-07-21)
 
 **🔍 筛选导航重写：OCR 视觉导航替代固定按键**
-- 旧版删车筛选/跑图选车用固定"按 N 下"导航，其他账号因车辆拥有情况不同（列表条目缺失/增减）会错位
-- 新版按文字目标导航：实时 OCR 可见列表 + 黄绿边框定位高亮行 + 按键后 OCR 校验（不符自动校正），自动适配任意账号
-- 筛选前 X 重置残留勾选；半页翻页搜索（重叠防跳过）+ 卡底/循环检测；目标在上方时自动回顶重搜
-- 目标选项缺失 → 报错放弃该环节，不带错误筛选继续跑（防卖错车）
+- 旧版删车筛选/跑图选车用固定“按 N 下”导航，其他账号因车辆拥有情况不同（列表条目缺失/增减）会错位
+- 新版按文字目标导航：Y 打开筛选 → X 重置残留勾选 → 逐键 OCR 搜索，目标入屏瞬间高亮正好在它上面，直接 Enter（零过头）→ 复选框像素差验证（阈值 120，实测 220+）→ 未命中自动回滚误勾 + 点击兜底 → ESC 关闭
+- 关键发现：滚动页高亮行在截图里没有静态视觉特征（逐行全特征扫描证实），靠运动学规律解决——列表滚动时高亮贴屏幕底边，目标入屏那一刻高亮 == 目标
+- 筛选前 X 重置残留勾选；目标选项缺失 → 报错放弃该环节，不带错误筛选继续跑（防卖错车）
 - 新增 `filter_nav.py`（FilterNavMixin）+ `ocr_onnx.py` 新增 `detect_lines_in_region()` 逐行 OCR
+
+**👎 评价弹窗改为 OCR 点踩**
+- 赛事评价弹窗（点赞/点踩/取消）从图片匹配改为 OCR 识别中央区域“点踩”文字
+- 动作从“Enter 点赞”改为“下移一格 + Enter 点踩”
+
+**🐛 Bug 修复（7 项）**
+- 修复二次 OCR 验证“按键没生效重按”分支必崩（未定义变量）
+- 修复 lambda 捕获 except 块变量（Python3 出 except 块即删除）
+- 修复 find_image_ultimate_safe 所有 scale 模板加载失败时调试块 UnboundLocalError
+- 修复 config.json 损坏日志缺少异常原因
+- 修复 recovery.py 裸 except
+- 修复启动崩溃（log 节流变量未初始化）
+- 修复截图缓存中毒（PrintWindow 失败后 GDI 对象被反复复用 → 释放缓存 + 全新重试）
+
+**⚡ 性能优化**
+- OCR：rec 输入宽 320→240（耗时 -20~25%）；det 预处理缓冲复用（零分配）；筛选面板 det max_side 960→416（提速 ~44%）
+- 截图：DC/位图按 (hwnd,w,h) 缓存复用（省 ~1ms/帧）；GDI 失败返回 None 不再崩 bot
+- 模板匹配：灰度/边缘模板按 scale 惰性缓存（原每个候选重复 cvtColor+Canny）
+- 日志：100ms 批量节流渲染（原每条 after(0)）
+- 筛选按键提速：间隔 0.1→0.06/0.04s（~2 倍）；卡底检测加丢键容错
+- 完赛检测间隔 1.0→0.5s
+- 多线程匹配线程数 cpu-1 → cpu//2，留更多核心给游戏
+
+**🧹 代码清理（约 370 行）**
+- 删除死方法 _save_race_car_debug（Steam+Xbox 共 224 行）、start_test_boot、死按钮、孤儿文件、8 处未用导入
+- OCR 上车检测抽取为共享方法（原三处重复实现）
+- 调试截图统一为通用 _save_point_debug
+- Xbox 版 OCR 区域对齐 Steam 版
+
+**🔧 OCR 模型**
+- 换用 PP-OCRv6 small（det 9.4MB + rec 20.2MB，字典 18708 字符），移除 tiny（错误率过高）
 
 **⚙️ 配置变更（自动迁移，无需手动改）**
 - 方案新增 `sell_filter`（方案1 默认 `["重复项","S2","顶级超跑","全轮驱动"]`，方案2 默认 `["S1","漂移赛车","后轮驱动","传奇"]`）
@@ -201,7 +231,7 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 - 其他账号适配：只需把选项文字改成自己列表里的实际文字
 
 **🔄 Xbox 版选车同步**
-- Xbox 版跑图选车从旧版图片匹配（skillcar/liketag/drivingtag/品牌重试）升级为与 Steam 版一致的 OCR 视觉导航 + OCR 上车检测
+- Xbox 版跑图选车从旧版图片匹配升级为与 Steam 版一致的 OCR 视觉导航 + OCR 上车检测
 
 **🧪 离线验证工具**
 - 新增 `test_filter_nav.py`：用真实筛选面板截图离线验证 OCR 行识别/高亮行检测/目标定位，无需启动游戏
