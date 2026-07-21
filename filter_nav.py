@@ -39,8 +39,8 @@ DEFAULT_SELL_FILTER_SCHEME2 = ["S1", "漂移赛车", "后轮驱动", "传奇"]
 DEFAULT_RACE_FILTER = ["收藏", "复古拉力赛车", "传奇"]
 
 # 按键节奏（与旧版固定导航验证过的节奏一致：delay=0.1 + gap=0.1，快了会丢按键）
-_PRESS_DELAY = 0.1        # hw_press 按键持续时间
-_PRESS_GAP = 0.1          # 连续方向键之间的间隔
+_PRESS_DELAY = 0.06       # hw_press 按键持续时间（v1.2.10.5: 0.1 -> 0.06，逐键 OCR 校验+卡底容错兜底丢键）
+_PRESS_GAP = 0.04         # 连续方向键之间的间隔（v1.2.10.5: 0.1 -> 0.04）
 _PAGE_SETTLE = 0.3        # 翻页后等待列表渲染（v1.2.10.2: 0.5 -> 0.3，配合 0.7 页步长提速）
 _TOGGLE_SETTLE = 0.8      # Enter 勾选后等待
 _MAX_PAGES = 14           # 回顶搜索最大翻页数（_scroll_to_top 用）
@@ -377,6 +377,7 @@ class FilterNavMixin:
         seen_pages = set()
         last_page_key = None
         first_check = True
+        stuck_count = 0  # 连续画面不变计数（容错偶尔丢键：单次不变只重试，连续两次才判到底）
 
         for step in range(_MAX_WALK_STEPS):
             if not self.is_running:
@@ -393,10 +394,16 @@ class FilterNavMixin:
             page_key = tuple(_norm_text(l["text"]) for l in lines)
             hl_idx = self._pick_highlight_line(panel, lines)
 
-            # 卡底检测：画面不变（按键不再滚动列表）-> 到底了
+            # 卡底检测：画面不变 -> 可能丢键（重试一次）或真的到底了（连续两次不变）
             if page_key == last_page_key:
-                self._save_filter_debug(panel, lines, hl_idx, f"{label}_{target}_stuck")
-                return False
+                stuck_count += 1
+                if stuck_count >= 2:
+                    self._save_filter_debug(panel, lines, hl_idx, f"{label}_{target}_stuck")
+                    return False
+                self.hw_press("down", delay=_PRESS_DELAY)
+                time.sleep(_PRESS_GAP + 0.05)
+                continue
+            stuck_count = 0
             # 循环检测：整页绕回
             if page_key in seen_pages:
                 return False

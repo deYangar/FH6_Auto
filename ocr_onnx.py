@@ -23,10 +23,28 @@ import numpy as np
 import onnxruntime as ort
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-REC_MODEL = os.path.join(BASE_DIR, "onnx_models", "PP-OCRv6_tiny_rec_onnx", "inference.onnx")
-REC_YML = os.path.join(BASE_DIR, "onnx_models", "PP-OCRv6_tiny_rec_onnx", "inference.yml")
-DET_MODEL = os.path.join(BASE_DIR, "onnx_models", "PP-OCRv6_tiny_det_onnx", "inference.onnx")
-DET_YML = os.path.join(BASE_DIR, "onnx_models", "PP-OCRv6_tiny_det_onnx", "inference.yml")
+
+# OCR 模型变体："small" 识别率更高（v1.2.10.5 起默认） / "tiny" 更快；
+# small 模型缺失时自动回退 tiny。OCREngine(variant=...) 可单独覆盖（双引擎场景）。
+OCR_MODEL_VARIANT = "small"
+
+
+def _pick_model_dir(kind, variant=None):
+    """选择 det/rec 模型目录。优先级：构造器指定 variant -> OCR_MODEL_VARIANT -> tiny。
+    返回 (目录, 实际变体名)。"""
+    base = os.path.join(BASE_DIR, "onnx_models")
+    candidates = []
+    if variant and variant not in candidates:
+        candidates.append(variant)
+    if OCR_MODEL_VARIANT not in candidates:
+        candidates.append(OCR_MODEL_VARIANT)
+    if "tiny" not in candidates:
+        candidates.append("tiny")
+    for v in candidates:
+        d = os.path.join(base, f"PP-OCRv6_{v}_{kind}_onnx")
+        if os.path.isfile(os.path.join(d, "inference.onnx")):
+            return d, v
+    return os.path.join(base, f"PP-OCRv6_{candidates[-1]}_{kind}_onnx"), candidates[-1]
 
 # 比赛结果文字在屏幕中的位置（比例）
 # "挑战完成！" / "挑战失败" 出现在左上角偏下
@@ -55,12 +73,14 @@ DET_MAX_CANDIDATES = 3000
 class OCREngine:
     """PP-OCRv6 tiny det + rec ONNX 推理引擎"""
 
-    def __init__(self, log_func=None, use_directml=False):
+    def __init__(self, log_func=None, use_directml=False, variant=None):
         self.log = log_func or (lambda msg: None)
         self.rec_session = None
         self.det_session = None
         self.chars = None
         self.use_directml = use_directml
+        self.variant = variant  # None = 用模块默认 OCR_MODEL_VARIANT
+        self.rec_img_h = REC_IMG_H
         # det 预处理缓冲缓存：按 (h, w) 复用 resize 输出 + 归一化 CHW 缓冲，
         # 省掉每次调用的内存分配 + transpose 拷贝（同尺寸输入高频调用时累积可观）
         self._det_bufs = {}
@@ -97,23 +117,29 @@ class OCREngine:
         """加载 detection + recognition ONNX 模型和字符字典"""
         t0 = time.time()
 
+        rec_dir, rec_v = _pick_model_dir("rec", self.variant)
+        det_dir, det_v = _pick_model_dir("det", self.variant)
+
         # 加载 recognition 模型
-        self.rec_session = self._create_session(REC_MODEL)
+        self.rec_session = self._create_session(os.path.join(rec_dir, "inference.onnx"))
 
         # 加载 detection 模型
-        self.det_session = self._create_session(DET_MODEL)
+        self.det_session = self._create_session(os.path.join(det_dir, "inference.onnx"))
 
         gpu_tag = "DirectML" if self.use_directml else "CPU"
-        self.log(f"[OCR] det + rec 模型加载完成（{gpu_tag}）")
 
-        # 加载字符字典
+        # 加载字符字典（不同变体字典可能不同，必须随模型配套读取）
         import yaml
-        with open(REC_YML, "r", encoding="utf-8") as f:
+        with open(os.path.join(rec_dir, "inference.yml"), "r", encoding="utf-8") as f:
             yml = yaml.safe_load(f)
         self.chars = yml["PostProcess"]["character_dict"]
+        # rec 输入高度从 yml 读取（不同变体可能不同），缺失用默认 48
+        shape = (yml.get("Global") or {}).get("rec_image_shape")
+        if isinstance(shape, (list, tuple)) and len(shape) >= 2:
+            self.rec_img_h = int(shape[-2])
 
         elapsed = time.time() - t0
-        self.log(f"[OCR] 初始化完成，{len(self.chars)} 字符，耗时 {elapsed:.2f}s")
+        self.log(f"[OCR] det({det_v}) + rec({rec_v}) 模型加载完成（{gpu_tag}），{len(self.chars)} 字符，耗时 {elapsed:.2f}s")
 
     # ==========================================
     # Detection 预处理 + 后处理（DB 算法）
@@ -230,13 +256,13 @@ class OCREngine:
     # ==========================================
 
     def _rec_preprocess(self, crop):
-        """rec 模型预处理：resize 到 48px 高，归一化"""
+        """rec 模型预处理：resize 到模型输入高（默认 48px），归一化"""
         h, w = crop.shape[:2]
-        ratio = REC_IMG_H / h
+        ratio = self.rec_img_h / h
         target_w = min(int(w * ratio), REC_MAX_W)
         target_w = max(4, (target_w // 4) * 4)
 
-        resized = cv2.resize(crop, (target_w, REC_IMG_H))
+        resized = cv2.resize(crop, (target_w, self.rec_img_h))
         inp = resized.astype(np.float32) / 255.0
         inp = (inp - 0.5) / 0.5
         return np.ascontiguousarray(inp.transpose(2, 0, 1)[np.newaxis, ...], dtype=np.float32)
