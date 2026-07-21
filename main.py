@@ -1922,32 +1922,6 @@ class FH_UltimateBot(
         self.ui_call(self.update_running_state, "idle")
         self.log("!!! 任务已停止,所有物理按键状态已强制重置")
 
-    def start_test_boot(self):
-        """独立运行的测试开机流程"""
-        if self.is_running:
-            self.log("已有任务正在运行,请先点击停止后再测试启动流程!")
-            return
-
-        self.is_running = True
-        self.save_config()
-        self.reset_run_stats()
-        self.update_running_state("running")
-        self.update_running_ui("测试启动")
-        self.update_timer()
-
-        self.log("====== 开始独立测试自动开机与识别流程 ======")
-
-        def test_runner():
-            success = self.restart_game_and_boot(force_test=True)
-            if success:
-                self.log("测试结束:自动开机、A/B/C状态机识别并到达菜单完美跑通!")
-            else:
-                self.log("测试结束:自动开机流程失败,请检查截图或日志。")
-            self.stop_all() # 测试完毕自动停止脚本,自动恢复回大窗口状态
-
-        self.current_thread = threading.Thread(target=test_runner, daemon=True)
-        self.current_thread.start()
-
     def toggle_pause(self):
         if not self.is_running:
             return

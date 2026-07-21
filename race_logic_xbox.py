@@ -681,7 +681,7 @@ class RaceMixin:
                         finished = True
                         break
 
-                time.sleep(1.0)  # OCR 检测间隔 1 秒
+                time.sleep(0.5)  # OCR 检测间隔 0.5 秒（v1.2.10.2: 1.0 -> 0.5，完赛响应更快）
 
                 # 卡死检测：超过设定秒数未检测到比赛结果，尝试恢复
                 stuck_timeout = max(10, int(self.config.get("stuck_timeout", 60)))

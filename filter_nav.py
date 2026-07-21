@@ -41,7 +41,7 @@ DEFAULT_RACE_FILTER = ["收藏", "复古拉力赛车", "传奇"]
 # 按键节奏（与旧版固定导航验证过的节奏一致：delay=0.1 + gap=0.1，快了会丢按键）
 _PRESS_DELAY = 0.1        # hw_press 按键持续时间
 _PRESS_GAP = 0.1          # 连续方向键之间的间隔
-_PAGE_SETTLE = 0.5        # 翻页后等待列表渲染
+_PAGE_SETTLE = 0.3        # 翻页后等待列表渲染（v1.2.10.2: 0.5 -> 0.3，配合 0.7 页步长提速）
 _TOGGLE_SETTLE = 0.8      # Enter 勾选后等待
 _MAX_PAGES = 14           # 单轮搜索最大翻页数（整表约 66 个可聚焦行，半页步进足够两轮）
 _MAX_CORRECTION = 8       # 偏移校正最大扫描步数（单方向）
@@ -388,8 +388,8 @@ class FilterNavMixin:
                 self.log(f"[{label}] 目标可见但高亮行未知，改用点击勾选: {target}")
                 return self._click_toggle_line(panel, lines[tgt_idx], label)
 
-            # 不在屏：向下翻半页
-            step = max(3, len(lines) // 2)
+            # 不在屏：向下翻 0.7 页（相邻页保留 30% 重叠，目标不会被跳过）
+            step = max(3, int(len(lines) * 0.7))
             for _ in range(step):
                 self.hw_press("down", delay=_PRESS_DELAY)
                 time.sleep(_PRESS_GAP)
