@@ -24,9 +24,11 @@ import onnxruntime as ort
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# OCR 模型变体："small" 识别率更高（v1.2.10.5 起默认） / "tiny" 更快；
-# small 模型缺失时自动回退 tiny。OCREngine(variant=...) 可单独覆盖（双引擎场景）。
-OCR_MODEL_VARIANT = "small"
+# OCR 模型变体："small" 识别率更高 / "tiny" 更快（默认）；
+# 实测（v1.2.10.6）：筛选面板目标词 tiny 已 100% 命中，small 慢 2.4 倍且无准确率收益 -> 换回 tiny。
+# small 独有能力：复选框 □/☑ 状态识别（以后低频验证场景可 OCREngine(variant="small") 单独挂载）。
+# small 模型缺失时自动回退 tiny。
+OCR_MODEL_VARIANT = "tiny"
 
 
 def _pick_model_dir(kind, variant=None):

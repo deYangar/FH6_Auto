@@ -147,6 +147,25 @@ class FilterNavMixin:
         self.hw_press("esc")
         return False
 
+    def ocr_detect_author_prompt(self):
+        """
+        OCR 检测赛事评价弹窗（v1.2.10.6 替代 likeauthor/dislikeauthor 图片匹配）。
+
+        弹窗为居中三按钮（点赞/点踩/取消，默认高亮点赞），识别中央区域文字，
+        出现"点踩"即判定弹窗存在。返回 OCR 文本（弹窗存在）或空字符串（不存在）。
+        """
+        engine = self.get_ocr_engine()
+        img = self.capture_region(self.regions["全界面"])
+        if img is None or engine is None:
+            return ""
+        text = engine.detect_text_in_region(img, {
+            "y_start": 0.30,
+            "y_end": 0.70,
+            "x_start": 0.25,
+            "x_end": 0.75,
+        })
+        return text if "点踩" in text else ""
+
     # ============ 面板打开检测 ============
 
     def _wait_for_filter_panel(self, press_y=True, timeout=3.0):

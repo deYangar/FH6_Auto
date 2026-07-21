@@ -889,7 +889,7 @@ class VisionMixin:
                 except Exception:
                     return (scale, [], 0.0, (0, 0))
 
-            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) - 1))
+            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) // 2))  # v1.2.10.6: cpu-1 -> cpu//2，留更多核心给游戏
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 parallel_results = list(ex.map(_match_one_scale, scale_data.items()))
 
@@ -2061,7 +2061,7 @@ class VisionMixin:
                 except Exception:
                     return (scale, [])
 
-            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) - 1))
+            max_workers = min(len(scale_data), max(1, (os.cpu_count() or 4) // 2))  # v1.2.10.6: cpu-1 -> cpu//2，留更多核心给游戏
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 parallel_results = list(ex.map(_match_one_scale, scale_data.items()))
 

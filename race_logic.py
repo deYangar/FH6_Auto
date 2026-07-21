@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
 import time
-import os
-import json
 import threading
-import cv2
 from constants import DIK_CODES
-from config import APP_DIR
 from recognition_config import get_recognition_profile
 from ocr_onnx import OCREngine
 from filter_nav import DEFAULT_RACE_FILTER
@@ -438,13 +434,12 @@ class RaceMixin:
                     elif vram_result is False:
                         self.log("VRAM恢复失败。")
                         return False
-                    pos_like = self.find_any_image_gray(
-                        ["likeauthor.png", "dislikeauthor.png"],
-                        region=self.regions["中间"],
-                        threshold=0.70
-                    )
-                    if pos_like:
-                        self.log("识别到点赞界面,执行回车确认!")
+                    # OCR 检测评价弹窗（v1.2.10.6: 图片匹配 -> OCR）：点踩 = 下移一格 + Enter
+                    like_text = self.ocr_detect_author_prompt()
+                    if like_text:
+                        self.log(f"OCR 识别到评价弹窗，执行点踩 (text={like_text[:40]})")
+                        self.hw_press("down")
+                        time.sleep(0.3)
                         self.hw_press("enter")
                     last_vram_chk = now
 
@@ -579,19 +574,19 @@ class RaceMixin:
         return False
 
     def handle_author_prompt(self, release_drive_keys=False):
-        """检测并处理赛事评价弹窗（点赞/点踩作者）。"""
+        """检测并处理赛事评价弹窗（v1.2.10.6: OCR 版，执行点踩：下移一格 + Enter）。"""
         profile = get_recognition_profile(self, "race.author_prompt")
         self.log(f"正在检测赛事评价弹窗（最多 {profile['timeout']:.1f}s）...", level="DEBUG")
-        pos_author = self.wait_for_any_image_gray(
-            ["likeauthor.png", "dislikeauthor.png"],
-            region=self.regions["中间"],
-            threshold=profile["threshold"],
-            timeout=profile["timeout"],
-            interval=profile["interval"],
-            fast_mode=profile["fast_mode"],
-            invert_mode=profile["invert_mode"],
-        )
-        if not pos_author:
+        deadline = time.time() + profile["timeout"]
+        like_text = ""
+        while time.time() < deadline:
+            if not self.is_running:
+                return False
+            like_text = self.ocr_detect_author_prompt()
+            if like_text:
+                break
+            time.sleep(profile["interval"])
+        if not like_text:
             self.log("未出现赛事评价弹窗，继续后续流程。", level="DEBUG")
             return False
 
@@ -599,11 +594,9 @@ class RaceMixin:
             self.hw_key_up("w")
             self.hw_key_up("up")
 
-        self.log("已识别赛事评价弹窗，执行点赞确认。")
-        for _ in range(2):
-            if not self.is_running:
-                return True
-            self.hw_press("enter")
-            time.sleep(0.35)
+        self.log(f"OCR 识别到赛事评价弹窗，执行点踩 (text={like_text[:40]})")
+        self.hw_press("down")  # 默认高亮"点赞"，下移一格到"点踩"
+        time.sleep(0.3)
+        self.hw_press("enter")
         time.sleep(0.8)
         return True
