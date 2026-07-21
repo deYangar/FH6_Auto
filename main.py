@@ -47,6 +47,10 @@ from buy_logic import BuyMixin
 from cj_logic import CJMixin
 from sell_logic import SellMixin
 from anti_cheat import AntiCheatMixin
+from filter_nav import (
+    FilterNavMixin,
+    DEFAULT_SELL_FILTER_SCHEME1, DEFAULT_SELL_FILTER_SCHEME2, DEFAULT_RACE_FILTER,
+)
 
 pyautogui.FAILSAFE = False
 ctk.set_appearance_mode("Dark")
@@ -56,6 +60,7 @@ ctk.set_default_color_theme("blue")
 class FH_UltimateBot(
     InputMixin, VisionMixin, RecoveryMixin,
     RaceMixin, BuyMixin, CJMixin, SellMixin, AntiCheatMixin,
+    FilterNavMixin,
     ctk.CTk
 ):
     def __init__(self):
@@ -394,6 +399,16 @@ class FH_UltimateBot(
                 schemes.append(scheme_2)
             self.config["schemes"] = schemes
             self.config["current_scheme"] = 0
+
+        # 3.5 筛选导航字段迁移 (v1.2.10.0)：老配置补齐 sell_filter / race_filter
+        #     默认值来自 v1.2.9.0 固定按键序列的反推（方案1: 2/6/14/28，方案2: 7/10/32/5，选车: 35/19）
+        for _i, _s in enumerate(self.config.get("schemes", [])):
+            if not isinstance(_s.get("sell_filter"), list) or not _s.get("sell_filter"):
+                _s["sell_filter"] = list(
+                    DEFAULT_SELL_FILTER_SCHEME2 if _i == 1 else DEFAULT_SELL_FILTER_SCHEME1
+                )
+            if not isinstance(_s.get("race_filter"), list) or not _s.get("race_filter"):
+                _s["race_filter"] = list(DEFAULT_RACE_FILTER)
 
         # 确保顶层 class_image 与当前方案同步
         _idx = self.config.get("current_scheme", 0)

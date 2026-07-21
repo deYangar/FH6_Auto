@@ -9,6 +9,7 @@ from constants import DIK_CODES
 from config import APP_DIR
 from recognition_config import get_recognition_profile
 from ocr_onnx import OCREngine
+from filter_nav import DEFAULT_RACE_FILTER
 
 
 class RaceMixin:
@@ -441,29 +442,13 @@ class RaceMixin:
         self.game_click(pos_cc)
         time.sleep(1.0)
 
-        # ====== 选车：固定按键导航 + OCR ======
-        self.log("使用固定按键导航选车...")
-        self.hw_press("y")
-        time.sleep(1.0)
-        self.hw_press("enter")
-        time.sleep(0.8)
-        for _ in range(35):
-            if not self.is_running:
-                return False
-            self.hw_press("down", delay=0.1)
-            time.sleep(0.1)
-        self.hw_press("enter")
-        time.sleep(0.8)
-        for _ in range(19):
-            if not self.is_running:
-                return False
-            self.hw_press("down", delay=0.1)
-            time.sleep(0.1)
-        self.hw_press("enter")
-        time.sleep(0.8)
-        self.hw_press("esc")
-        time.sleep(1.0)
-        self.hw_press("enter")
+        # ====== 选车：OCR 视觉导航筛选（v1.2.10.0，适配不同账号的车辆列表）======
+        race_filter = self.get_scheme_filter("race_filter") or DEFAULT_RACE_FILTER
+        self.log(f"使用 OCR 视觉导航选车: {' + '.join(race_filter)}")
+        if not self.open_and_apply_filter(race_filter, label="跑图选车"):
+            self.log("跑图选车筛选失败", level="ERROR")
+            return False
+        self.hw_press("enter")  # 选中筛出的车辆
         time.sleep(1.0)
 
         # OCR 检测"上车"（中心区域，比例换算自 1600*900 下 558*287 居中矩形）

@@ -377,6 +377,97 @@ class OCREngine:
 
         return " ".join(all_texts)
 
+    def detect_lines_in_region(self, image, region_ratio=None):
+        """
+        对指定区域跑 OCR，返回逐行结果（文字 + 坐标）
+
+        与 detect_text_in_region 的区别：保留每行的文字框坐标，
+        供筛选导航等需要"按行定位"的场景使用（v1.2.10.0+）。
+
+        Args:
+            image: BGR numpy array（完整截图）
+            region_ratio: dict with y_start, y_end, x_start, x_end (0~1 比例)
+                         None 表示全图
+
+        Returns:
+            list[dict]: 按 y 从上到下排序，每项 {"text": str, "box": (x1, y1, x2, y2)}
+                        坐标相对于 region 裁剪后的图像
+        """
+        if self.rec_session is None or self.det_session is None:
+            self.init()
+        if image is None:
+            return []
+
+        h, w = image.shape[:2]
+        if region_ratio:
+            y1 = int(h * region_ratio.get("y_start", 0))
+            y2 = int(h * region_ratio.get("y_end", 1))
+            x1 = int(w * region_ratio.get("x_start", 0))
+            x2 = int(w * region_ratio.get("x_end", 1))
+            image = image[y1:y2, x1:x2]
+            if image.size == 0:
+                return []
+            h, w = image.shape[:2]
+
+        # detection
+        boxes = None
+        try:
+            det_inp, (orig_h, orig_w, new_h, new_w) = self._det_preprocess(image)
+            det_out = self.det_session.run(None, {"x": det_inp})
+            boxes = self._det_postprocess(det_out[0], orig_h, orig_w, new_h, new_w)
+        except Exception as e:
+            self.log(f"[OCR] detection 异常: {e}")
+
+        if not boxes:
+            return []
+
+        # 逐框识别
+        items = []  # (text, (x1, y1, x2, y2))
+        for (bx1, by1, bx2, by2) in boxes:
+            bx1, by1 = max(0, int(bx1)), max(0, int(by1))
+            bx2, by2 = min(w, int(bx2)), min(h, int(by2))
+            if bx2 <= bx1 or by2 <= by1:
+                continue
+            crop = image[by1:by2, bx1:bx2]
+            if crop.size == 0:
+                continue
+            inp = self._rec_preprocess(crop)
+            try:
+                out = self.rec_session.run(None, {"x": inp})
+                text = self._decode_ctc(out[0])
+                if text.strip():
+                    items.append((text.strip(), (bx1, by1, bx2, by2)))
+            except Exception as e:
+                self.log(f"[OCR] rec 推理异常 (crop={crop.shape}): {e}")
+                continue
+
+        # 同行合并：垂直重叠超过 50% 的框视为同一行（如 "GT 赛车" 被拆成两个框）
+        items.sort(key=lambda it: (it[1][1] + it[1][3]) / 2)
+        lines = []
+        for text, box in items:
+            merged = False
+            for line in lines:
+                lx1, ly1, lx2, ly2 = line["box"]
+                oy1 = max(ly1, box[1])
+                oy2 = min(ly2, box[3])
+                min_h = min(ly2 - ly1, box[3] - box[1])
+                if min_h > 0 and (oy2 - oy1) / min_h > 0.5:
+                    if box[0] < lx1:
+                        line["text"] = text + line["text"]
+                    else:
+                        line["text"] = line["text"] + text
+                    line["box"] = (
+                        min(lx1, box[0]), min(ly1, box[1]),
+                        max(lx2, box[2]), max(ly2, box[3]),
+                    )
+                    merged = True
+                    break
+            if not merged:
+                lines.append({"text": text, "box": box})
+
+        lines.sort(key=lambda l: l["box"][1])
+        return lines
+
     def detect_from_path(self, image_path):
         """从文件路径加载图片并检测"""
         img = cv2.imdecode(np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_COLOR)

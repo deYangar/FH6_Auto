@@ -15,6 +15,7 @@ import numpy as np
 from config import APP_DIR
 from recognition_config import get_recognition_profile
 from ocr_onnx import OCREngine
+from filter_nav import DEFAULT_RACE_FILTER
 from constants import DIK_CODES
 
 
@@ -518,94 +519,38 @@ class RaceMixin:
         self.game_click(pos_cc)
         time.sleep(1.0)
 
-        # 选车流程（从 Steam 版同步）
-        pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
-        if pos_target:
-            self.detail_state_confirmed = True
-
-        if not pos_target:
-            self.log("严格匹配未命中：skillcar + liketag 固定位置验证未通过，重新选品牌...")
-            self._save_race_car_debug(
-                "combo_miss_before_brand",
-                note="初次严格匹配未命中，保存 skillcar/liketag 最佳匹配情况",
-                extra={"main": "skillcar.png", "sub": "liketag.png"}
-            )
-            self.log("未找到带 liketag 的目标车辆,重新选品牌...")
-            self.hw_press("backspace")
-            time.sleep(1.2)
-
-            found_brand = False
-            for _ in range(3):
-                if not self.is_running:
-                    return False
-
-                pos_brand = self.wait_for_image_gray("skillcarbrand.png", region=self.regions["全界面"], threshold=0.8, timeout=1.2, interval=0.2, fast_mode=True)
-                if pos_brand:
-                    self.game_click(pos_brand)
-                    time.sleep(1.2)
-                    found_brand = True
-                    break
-
-                self.hw_press("up")
-                time.sleep(0.4)
-
-            if not found_brand:
-                self.log("三次尝试未找到刷图车辆品牌。")
-                return False
-
-            for _ in range(20):
-                if not self.is_running:
-                    return False
-
-                pos_target = self.wait_for_skill_car_strict(timeout=4, interval=0.25)
-                if pos_target:
-                    self.detail_state_confirmed = True
-
-                if not pos_target:
-                    self.log("严格匹配未命中：skillcar + liketag 固定位置验证未通过，本页跳过。")
-                    self._save_race_car_debug(
-                        "combo_miss_page",
-                        note="翻页/品牌选择后严格匹配未命中，保存本页 skillcar/liketag 最佳匹配情况",
-                        extra={"main": "skillcar.png", "sub": "liketag.png"}
-                    )
-                if pos_target:
-                    break
-
-                for _ in range(4):
-                    self.hw_press("right", delay=0.08)
-                    time.sleep(0.08)
-                time.sleep(0.4)
-
-        if not pos_target:
-            self.log("翻页未能找到带有 liketag 的刷图车辆!")
+        # ====== 选车：OCR 视觉导航筛选（v1.2.10.0，与 Steam 版同步）======
+        race_filter = self.get_scheme_filter("race_filter") or DEFAULT_RACE_FILTER
+        self.log(f"使用 OCR 视觉导航选车: {' + '.join(race_filter)}")
+        if not self.open_and_apply_filter(race_filter, label="跑图选车"):
+            self.log("跑图选车筛选失败", level="ERROR")
             return False
+        self.hw_press("enter")  # 选中筛出的车辆
+        time.sleep(1.0)
 
-        # 点击前先检测 drivingtag，判断车辆是否已在驾驶中
-        sw = self.regions["全界面"][2]
-        sh = self.regions["全界面"][3]
-        det_w = int(sw * 0.2)
-        det_h = int(sh * 0.2)
-        has_drivingtag = self.find_image(
-            "drivingtag.png",
-            region=(pos_target[0], pos_target[1], det_w, det_h),
-            threshold=0.75,
-            fast_mode=True
-        )
-        if has_drivingtag:
-            self.log("检测到 drivingtag，车辆已在驾驶")
-            self.hw_press("esc")
-            time.sleep(0.7)
-            self.hw_press("esc")
-            time.sleep(1.0)
-        else:
-            self.game_click(pos_target)
-            time.sleep(0.5)
-            self.hw_press("enter")
-            time.sleep(1.0)
+        # OCR 检测"上车"（中心区域，与 Steam 版同步）
+        ocr_engine = self.get_ocr_engine()
+        img = self.capture_region(self.regions["全界面"])
+        text = ""
+        if img is not None and ocr_engine:
+            text = ocr_engine.detect_text_in_region(img, {
+                "y_start": 0.34,
+                "y_end": 0.66,
+                "x_start": 0.325,
+                "x_end": 0.675,
+            })
+        if "上车" in text:
+            self.log(f"OCR 识别到'上车'，按 Enter 上车 (text={text})")
             self.hw_press("enter")
             time.sleep(4.0)
             self.log("选车完成,等待5秒后开始跑图...")
             time.sleep(5.0)
+        else:
+            self.log(f"OCR 未识别到'上车'，车辆已在驾驶 (text={text})")
+            self.hw_press("esc")
+            time.sleep(0.7)
+            self.hw_press("esc")
+            time.sleep(1.0)
 
         # ====== 阶段1~5：进入主菜单→EventLab→分享码→蓝图→进入赛事 ======
         if not self._navigate_to_eventlab_and_enter():

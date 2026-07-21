@@ -110,32 +110,15 @@ class SellMixin:
             self.log("30次内未找到购买与出售")
             return False
 
-        # ====== 筛选找车：固定按键导航 ======
-        _scheme_idx = self.config.get("current_scheme", 0)
-        self.log(f"当前方案: {_scheme_idx + 1}，使用固定按键导航筛选")
-
-        self.hw_press("y")
-        time.sleep(1.0)
-
-        if _scheme_idx == 1:
-            # 方案2: down×7 -> down×10 -> down×32 -> down×5
-            down_groups = [7, 10, 32, 5]
-        else:
-            # 方案1: down×2 -> down×6 -> down×14 -> down×28
-            down_groups = [2, 6, 14, 28]
-
-        for count in down_groups:
-            for _ in range(count):
-                if not self.is_running:
-                    return False
-                self.hw_press("down", delay=0.1)
-                time.sleep(0.1)
-            self.hw_press("enter")
-            time.sleep(0.8)
-
-        self.hw_press("esc")
-        time.sleep(1.0)
-        self.log("筛选完成")
+        # ====== 筛选找车：OCR 视觉导航（v1.2.10.0，按文字目标适配不同账号的车辆列表）======
+        sell_filter = self.get_scheme_filter("sell_filter")
+        if not sell_filter:
+            self.log("当前方案未配置 sell_filter，跳过删车环节", level="WARN")
+            return True
+        self.log(f"当前方案: {self.config.get('current_scheme', 0) + 1}，使用 OCR 视觉导航筛选: {' + '.join(sell_filter)}")
+        if not self.open_and_apply_filter(sell_filter, label="删车筛选"):
+            self.log("删车筛选失败（目标选项缺失或导航失败），中止删车", level="ERROR")
+            return False
 
         # ====== 筛选后 OCR 检测：是否没有可用车辆 ======
         _no_car = False
