@@ -43,7 +43,8 @@ _PRESS_DELAY = 0.1        # hw_press 按键持续时间
 _PRESS_GAP = 0.1          # 连续方向键之间的间隔
 _PAGE_SETTLE = 0.3        # 翻页后等待列表渲染（v1.2.10.2: 0.5 -> 0.3，配合 0.7 页步长提速）
 _TOGGLE_SETTLE = 0.8      # Enter 勾选后等待
-_MAX_PAGES = 14           # 单轮搜索最大翻页数（整表约 66 个可聚焦行，半页步进足够两轮）
+_MAX_PAGES = 14           # 回顶搜索最大翻页数（_scroll_to_top 用）
+_MAX_WALK_STEPS = 80      # 逐键搜索单轮最大步数（整表约 66 个可聚焦行 + 标题行，留余量）
 _MAX_CORRECTION = 8       # 偏移校正最大扫描步数（单方向）
 _CLICK_DIFF_THRESHOLD = 120.0  # 点击勾选验证：复选框区域平均像素差阈值（实测成功勾选差值 220~235，留足防误判余量）
 FILTER_DET_MAX_SIDE = 416  # 筛选面板 OCR 的 det 长边上限（面板 555×540 缩到 ~416，菜单文字 28px→21px 足够识别，det 耗时 -40%）
@@ -331,45 +332,46 @@ class FilterNavMixin:
 
     def _search_and_focus(self, target, label):
         """
-        向下翻页搜索目标选项；目标可见时把高亮移动到该行并 Enter 勾选。
+        逐键搜索目标选项（每按 1 次下就 OCR 一次）。
 
-        翻页策略：半页步进（保证相邻页重叠，目标不会被跳过）。
+        零过头原理：列表滚动时高亮贴着屏幕底边前进，目标行入屏的那一刻
+        高亮正好落在它上面 -> 此时直接 Enter 即命中目标，不会扫过再回头。
+        保险：Enter 后用复选框像素差验证，没命中再按一次 Enter 回滚误勾，降级点击。
         终止条件：
-        - 画面与高亮文字均不变 -> 列表到底（夹住），目标不存在
+        - 画面不再变化 -> 列表到底（夹住），目标不存在
         - 整页文字绕回已见过的页面 -> 列表循环，目标不存在
         """
         target_n = _norm_text(target)
         seen_pages = set()
         last_page_key = None
-        last_hl_text = None
+        first_check = True
 
-        for page in range(_MAX_PAGES):
+        for step in range(_MAX_WALK_STEPS):
             if not self.is_running:
                 return False
             panel = self._capture_filter_panel()
             if panel is None:
-                time.sleep(0.5)
+                time.sleep(0.3)
                 continue
             lines = self._ocr_panel_lines(panel)
             if not lines:
-                time.sleep(0.5)
+                time.sleep(0.3)
                 continue
 
             page_key = tuple(_norm_text(l["text"]) for l in lines)
             hl_idx = self._pick_highlight_line(panel, lines)
-            hl_text = _norm_text(lines[hl_idx]["text"]) if hl_idx is not None else None
 
-            # 卡底检测：画面和高亮都不变 -> 到底了
-            if page_key == last_page_key and hl_text == last_hl_text:
+            # 卡底检测：画面不变（按键不再滚动列表）-> 到底了
+            if page_key == last_page_key:
                 self._save_filter_debug(panel, lines, hl_idx, f"{label}_{target}_stuck")
                 return False
             # 循环检测：整页绕回
             if page_key in seen_pages:
                 return False
             seen_pages.add(page_key)
-            last_page_key, last_hl_text = page_key, hl_text
+            last_page_key = page_key
 
-            self._save_filter_debug(panel, lines, hl_idx, f"{label}_{target}_page{page}")
+            self._save_filter_debug(panel, lines, hl_idx, f"{label}_{target}_step{step}")
 
             # 目标在可见行中？
             tgt_idx = None
@@ -379,21 +381,24 @@ class FilterNavMixin:
                     break
 
             if tgt_idx is not None:
+                # 1) 高亮行检测成功（未滚动页的黑底样式）：键盘移动 + Enter（已验证路径）
                 if hl_idx is not None:
                     return self._move_highlight_and_toggle(
                         panel, lines, hl_idx, tgt_idx, target_n, label
                     )
-                # 高亮位置未知（滚动后的页面高亮样式不同，检测可能失败）：
-                # 直接点击目标行复选框勾选，用点击前后像素差验证
-                self.log(f"[{label}] 目标可见但高亮行未知，改用点击勾选: {target}")
-                return self._click_toggle_line(panel, lines[tgt_idx], label)
+                # 2) 目标是“本次按键刚入屏”：高亮贴底边 == 正好在目标行，直接 Enter
+                #    （Enter 后用复选框像素差验证；没命中会自动回滚 + 降级点击）
+                if not first_check:
+                    self.log(f"[{label}] 目标刚入屏，高亮应在目标行，Enter 勾选: {target}")
+                    return self._toggle_line(panel, lines[tgt_idx], label, enter_first=True)
+                # 3) 搜索开始时目标已在屏（高亮位置未知）：点击勾选
+                self.log(f"[{label}] 目标可见但高亮位置未知，改用点击勾选: {target}")
+                return self._toggle_line(panel, lines[tgt_idx], label)
 
-            # 不在屏：向下翻 0.7 页（相邻页保留 30% 重叠，目标不会被跳过）
-            step = max(3, int(len(lines) * 0.7))
-            for _ in range(step):
-                self.hw_press("down", delay=_PRESS_DELAY)
-                time.sleep(_PRESS_GAP)
-            time.sleep(_PAGE_SETTLE)
+            first_check = False
+            # 不在屏：按 1 次下（逐键检查，不会扫过目标）
+            self.hw_press("down", delay=_PRESS_DELAY)
+            time.sleep(_PRESS_GAP + 0.05)
 
         return False
 
@@ -437,14 +442,15 @@ class FilterNavMixin:
         self.log(f"[{label}] 高亮校正后仍未落在目标行: {target_n}", level="ERROR")
         return False
 
-    def _click_toggle_line(self, panel, line, label):
+    def _toggle_line(self, panel, line, label, enter_first=False):
         """
-        高亮位置未知时，直接点击目标行勾选复选框。
+        勾选目标行，全程用复选框区域（行右侧矩形条）像素差验证。
 
-        验证方式：点击前后对复选框区域（行右侧矩形条）做像素差比较，
-        差值超过阈值视为勾选成功（□→■ 填充变化很大，仅焦点样式变化很小）。
-        两段尝试：PostMessage 点击 -> SendMessage 点击 -> 盲 Enter（失败再按一次 Enter 回滚，
-        避免误勾未知高亮行后留下脏筛选）。
+        enter_first=True：目标刚入屏、高亮应在该行 —— 先直接 Enter；没命中时
+                          再按一次 Enter 回滚可能的误勾（高亮未移动，第二次 Enter
+                          撤销第一次），然后降级点击。
+        enter_first=False：高亮位置未知 —— 直接点击：PostMessage -> SendMessage
+                          -> 盲 Enter（失败回滚）。
         """
         gx, gy, gw, gh = self.regions["全界面"]
         px0 = gx + int(gw * FILTER_PANEL_REGION["x_start"])
@@ -463,6 +469,21 @@ class FilterNavMixin:
         before = _cb_crop(panel)
         if before is None or before.size == 0:
             return False
+
+        # Enter 优先路径：高亮应在目标行
+        if enter_first:
+            self.hw_press("enter")
+            time.sleep(0.6)
+            after = _cb_crop(self._capture_filter_panel())
+            if after is not None and after.shape == before.shape:
+                diff = float(np.abs(after - before).mean())
+                self.log(f"[{label}] Enter 行「{line['text']}」 复选框差值={diff:.1f}")
+                if diff > _CLICK_DIFF_THRESHOLD:
+                    return True
+            # 没命中：再按一次 Enter 回滚可能的误勾，降级点击
+            self.hw_press("enter")
+            time.sleep(0.4)
+            self.log(f"[{label}] Enter 未命中目标行，降级点击", level="WARN")
 
         click_x = px0 + pw // 2  # 行横跨整个面板，点水平中心即可
         click_y = py0 + cy
