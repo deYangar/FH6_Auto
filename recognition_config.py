@@ -28,6 +28,18 @@ DEFAULT_RECOGNITION_PROFILES = {
     "cj.cls": {"threshold": 0.68, "timeout": 8, "interval": 0.25, "fast_mode": False},
     "cj.exp": {"threshold": 0.75, "timeout": 1.2, "interval": 0.3, "fast_mode": True},
     "cj.spne": {"threshold": 0.66, "timeout": 0.8, "interval": 0.15, "fast_mode": False, "invert_mode": True},
+    # 超抽目标车：适度放宽单帧阈值，但必须连续两帧落在同一车卡，兼顾漏识别与误识别。
+    "cj.strict_new_car": {
+        "main_threshold": 0.82,
+        "main_fallback_min": 0.66,
+        "gray_threshold": 0.60,
+        "edge_threshold": 0.18,
+        "tag_threshold": 0.80,
+        "class_threshold": 0.80,
+        "confirm_frames": 2,
+        "confirm_distance": 70,
+        "strong_threshold": 0.86,
+    },
     "matcher.skillcar_like_combo": {"main_threshold": 0.78, "like_threshold": 0.75, "final_threshold": 0.75, "fast_mode": True},
     "matcher.skillcar_switch_rc": {"threshold": 0.70, "timeout": 2.0, "interval": 0.2, "fast_mode": True},
     "matcher.skillcar_brand_entry": {"threshold": 0.76, "timeout": 0.8, "interval": 0.2, "fast_mode": True},

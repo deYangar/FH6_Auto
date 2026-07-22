@@ -314,9 +314,11 @@ class CJMixin:
             if not self.is_running:
                 return False
             # ====== 根据下拉框判断进入方式 ======
-            cj_mode_str = "模式1"
-            if hasattr(self, "opt_cj_mode"):
-                cj_mode_str = self.opt_cj_mode.get()
+            # runner 线程不能读取 Tk 控件；启动时已固化到 _run_settings/config。
+            cj_mode = int(getattr(self, "_run_settings", {}).get(
+                "cj_mode", self.config.get("cj_mode", 1)
+            ))
+            cj_mode_str = "模式2" if cj_mode == 2 else "模式1"
 
             if "模式1" in cj_mode_str:
                 self.log("进入我的车辆.")

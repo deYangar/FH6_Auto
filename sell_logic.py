@@ -4,6 +4,27 @@ import time
 class SellMixin:
     """卖车业务逻辑：识别并移除消耗品车辆"""
 
+    def _try_open_focused_remove_menu(self):
+        """打开当前焦点车卡，并以“从车库移除”按钮确认它是可删除车辆。"""
+        self.log("车卡模板未命中，立即验证当前焦点车卡...")
+        self.hw_press("enter")
+        time.sleep(0.8)
+        pos_remove = self.wait_for_image_gray(
+            "removecar.png",
+            region=self.regions["中间"],
+            threshold=0.72,
+            timeout=1.8,
+            interval=0.25,
+            fast_mode=False,
+        )
+        if pos_remove:
+            self.log("当前焦点车卡通过移除菜单验证。")
+            return pos_remove
+
+        self.hw_press("esc")
+        time.sleep(0.5)
+        return None
+
     def find_and_remove_consumable_car(self, target_count):
         # ====== 任务内锁定，每次进入任务强制重置详情状态锁 ======
         self.detail_state_confirmed = False
@@ -154,25 +175,33 @@ class SellMixin:
             if pos_target:
                 self.detail_state_confirmed = True
 
+            focused_card = False
+            prefetched_remove = None
             if not pos_target:
                 not_found_pages += 1
+                # 筛选完成后，游戏默认高亮当前车卡；高亮会改变整张卡外观，使
+                # removecarobject 模板在每一辆车上都可能失配。漏检时必须先验证
+                # 当前焦点，不能先右移，否则会稳定跳过前面的车辆。
+                prefetched_remove = self._try_open_focused_remove_menu()
+                focused_card = bool(prefetched_remove)
+
+            if not pos_target and not focused_card:
                 if not_found_pages >= 10:
-                    self.log("连续 10 页未找到目标车辆，车辆已全部清理完毕。")
+                    self.log("连续 10 个焦点均未找到可移除车辆，结束当前删车任务。")
                     break
-                self.log(f"当前页面未找到，向右翻页寻找... (第 {not_found_pages} 次翻页)")
-                for _ in range(4):
-                    self.hw_press("right", delay=0.06)
-                    time.sleep(0.1)
-                time.sleep(0.4)
+                self.log(f"当前焦点不可移除，向右移动一格... (连续失败 {not_found_pages}/10)")
+                self.hw_press("right", delay=0.06)
+                time.sleep(0.5)
                 continue
 
             not_found_pages = 0
-            self.log("锁定目标车辆，执行点击...")
-            self.game_click(pos_target)
-            time.sleep(0.8)
+            if not focused_card:
+                self.log("锁定目标车辆，执行点击...")
+                self.game_click(pos_target)
+                time.sleep(0.8)
 
             self.log("寻找 '从车库移除' 按钮...")
-            pos_remove = self.wait_for_image_gray(
+            pos_remove = prefetched_remove or self.wait_for_image_gray(
                 "removecar.png",
                 region=self.regions["中间"],
                 threshold=0.70,

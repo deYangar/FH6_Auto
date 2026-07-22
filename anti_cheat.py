@@ -10,29 +10,45 @@ class AntiCheatMixin:
     def _init_anti_cheat_state(self):
         self._anti_cheat_running = False
         self._heartbeat_thread = None
+        self._heartbeat_stop_event = None
         self._last_screenshot_mean = None
         self._consecutive_black_screens = 0
         self._input_failure_count = 0
 
     def start_anti_cheat_heartbeat(self):
         """启动后台心跳线程，定期检测环境健康"""
-        if self._anti_cheat_running:
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             return
+        stop_event = threading.Event()
+        self._heartbeat_stop_event = stop_event
         self._anti_cheat_running = True
-        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            args=(stop_event,),
+            name="fh6-heartbeat",
+            daemon=True,
+        )
         self._heartbeat_thread.start()
         self.log("🛡️ 反检测心跳已启动")
 
     def stop_anti_cheat_heartbeat(self):
+        stop_event = self._heartbeat_stop_event
+        if stop_event:
+            stop_event.set()
         self._anti_cheat_running = False
+        thread = self._heartbeat_thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        if not thread or not thread.is_alive():
+            self._heartbeat_thread = None
+            self._heartbeat_stop_event = None
         self.log("🛡️ 反检测心跳已停止")
 
-    def _heartbeat_loop(self):
+    def _heartbeat_loop(self, stop_event):
         """每 10 秒执行一次检测"""
-        while self._anti_cheat_running and getattr(self, "is_running", False):
-            time.sleep(10)
-            if not getattr(self, "is_running", False):
-                continue
+        while not stop_event.wait(10.0):
+            if stop_event.is_set() or not getattr(self, "is_running", False):
+                break
             try:
                 self._check_print_window_health()
             except Exception as e:

@@ -6,6 +6,8 @@ set APP_NAME=FH6Auto
 set MAIN_FILE=main.py
 set BUILD_TARGET=%1
 if "%BUILD_TARGET%"=="" set BUILD_TARGET=steam
+set PYTHON_EXE=python
+if exist ".venv\Scripts\python.exe" set PYTHON_EXE=.venv\Scripts\python.exe
 
 echo.
 echo ==============================
@@ -13,27 +15,27 @@ echo   FH6Auto Build [%BUILD_TARGET%]
 echo ==============================
 echo.
 
-python -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" 2>nul
+"%PYTHON_EXE%" -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" 2>nul
 if errorlevel 1 (
     echo [ERROR] Python 3.8+ required
     pause
     exit /b 1
 )
 
-python -c "import PyInstaller" 2>nul
+"%PYTHON_EXE%" -c "import PyInstaller" 2>nul
 if errorlevel 1 (
     echo [INFO] Installing PyInstaller...
-    python -m pip install pyinstaller
+    "%PYTHON_EXE%" -m pip install pyinstaller
 )
 
 echo [INFO] Current version:
-python -c "import json;print(json.load(open('version.json'))['version'])" 2>nul
+"%PYTHON_EXE%" -c "from config import CURRENT_VERSION; print(CURRENT_VERSION)"
 
 echo [INFO] Check modules...
-python -c "import config,constants,input_handler,vision,recovery,race_logic,buy_logic,cj_logic,sell_logic,anti_cheat,focus_hook_manager" 2>nul
+"%PYTHON_EXE%" -c "import config,constants,input_handler,vision,recovery,race_logic,buy_logic,cj_logic,sell_logic,anti_cheat,focus_hook_manager" 2>nul
 if errorlevel 1 (
     echo [ERROR] Module import failed. Installing deps...
-    python -m pip install -r requirements.txt
+    "%PYTHON_EXE%" -m pip install -r requirements.txt
     pause
     exit /b 1
 )
@@ -73,7 +75,7 @@ if exist build rmdir /s /q build
 if exist "%EXE_NAME%.spec" del /f /q "%EXE_NAME%.spec"
 
 echo [INFO] Building with PyInstaller...
-python -m PyInstaller -n "%EXE_NAME%" -F -w --uac-admin --noupx "%MAIN_FILE%" --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" --add-data "onnx_models;onnx_models" --hidden-import yaml --hidden-import onnxruntime --noconfirm
+"%PYTHON_EXE%" -m PyInstaller -n "%EXE_NAME%" -F -w --uac-admin --noupx "%MAIN_FILE%" --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" --add-data "onnx_models;onnx_models" --hidden-import yaml --hidden-import onnxruntime --noconfirm
 
 if errorlevel 1 (
     echo [ERROR] Build failed!
