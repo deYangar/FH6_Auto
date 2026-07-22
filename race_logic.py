@@ -168,6 +168,37 @@ class RaceMixin:
     # ==========================================
     # --- 辅助：从主菜单导航到 EventLab 并进入赛事 ---
     # ==========================================
+
+    def _input_share_code(self, code_text):
+        """阶段3: 在 EventLab 搜索框输入分享码并搜索。
+        网络波动导致搜索无结果时可由阶段4重试调用。
+        Returns True on success, False on failure."""
+        self.log(f"阶段3: 搜索赛事（分享码: {code_text}）...")
+        self.hw_press("backspace")  # 打开搜索框
+        time.sleep(0.8)
+        self.hw_press("up")
+        time.sleep(0.4)
+        self.hw_press("enter")
+        time.sleep(0.8)
+
+        self.log(f"输入分享码: {code_text}")
+        for char in code_text:
+            if not self.is_running:
+                return False
+            if char in DIK_CODES:
+                self.hw_press(char, delay=0.15)
+                time.sleep(0.15)
+
+        time.sleep(0.4)
+        self.hw_press("enter")
+        time.sleep(0.8)
+        self.hw_press("down")
+        time.sleep(0.3)
+        self.hw_press("enter")
+        time.sleep(1.5)
+        self.log("阶段3完成: 分享码已输入")
+        return True
+
     def _navigate_to_eventlab_and_enter(self):
         """阶段2~5: 进入主菜单 → EventLab → 分享码 → 蓝图检测 → 进入赛事
         Returns True on success, False on failure."""
@@ -208,31 +239,9 @@ class RaceMixin:
         self.log("阶段2完成: 已进入 EventLab")
 
         # ====== 阶段3：搜索并进入 ======
-        self.log("阶段3: 搜索赛事...")
-        self.hw_press("backspace")
-        time.sleep(0.8)
-        self.hw_press("up")
-        time.sleep(0.4)
-        self.hw_press("enter")
-        time.sleep(0.8)
-
         code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
-        self.log(f"输入分享码: {code_text}")
-        for char in code_text:
-            if not self.is_running:
-                return False
-            if char in DIK_CODES:
-                self.hw_press(char, delay=0.15)
-                time.sleep(0.15)
-
-        time.sleep(0.4)
-        self.hw_press("enter")
-        time.sleep(0.8)
-        self.hw_press("down")
-        time.sleep(0.3)
-        self.hw_press("enter")
-        time.sleep(1.5)
-        self.log("阶段3完成: 分享码已输入")
+        if not self._input_share_code(code_text):
+            return False
 
         # ====== 阶段4：蓝图结果检测（OCR 下 1/5 区域） ======
         self.log("阶段4: 检测蓝图结果（OCR）...")
@@ -240,6 +249,7 @@ class RaceMixin:
         blueprint_last_wait_log = 0.0
         profile_nf = get_recognition_profile(self, "race.blueprint_not_found")
         engine = self.get_ocr_engine()
+        search_retries = 0  # 网络波动重试计数
         while self.is_running and time.time() < blueprint_wait_deadline:
             now = time.time()
             if now - blueprint_last_wait_log >= 2.0:
@@ -271,6 +281,19 @@ class RaceMixin:
                 if "挑战选项" in text or "挑战" in text:
                     self.log(f"OCR 识别到比赛入口: {text}")
                     break
+                # 网络波动：只出现"确定"按钮、没有挑战入口 → 搜索没结果
+                if "确定" in text and "挑战" not in text:
+                    search_retries += 1
+                    if search_retries > 2:
+                        self.log("蓝图搜索重试超过 2 次，放弃", level="ERROR")
+                        return self.abort_invalid_blueprint_and_back_to_roam()
+                    self.log(f"[蓝图搜索] 网络波动未搜到结果（只有'确定'），第 {search_retries} 次重试...")
+                    self.hw_press("enter")  # 关掉"确定"弹窗
+                    time.sleep(1.0)
+                    if not self._input_share_code(code_text):
+                        return False
+                    blueprint_wait_deadline = time.time() + 20  # 重置等待
+                    continue
 
             time.sleep(0.5)
 
@@ -434,10 +457,12 @@ class RaceMixin:
                     elif vram_result is False:
                         self.log("VRAM恢复失败。")
                         return False
-                    # OCR 检测评价弹窗（v1.2.10.6: 图片匹配 -> OCR）：点踩 = 下移一格 + Enter
+                    # OCR 检测评价弹窗（v1.2.10.6: 图片匹配 -> OCR）：取消 = 下移两格 + Enter
                     like_text = self.ocr_detect_author_prompt()
                     if like_text:
-                        self.log(f"OCR 识别到评价弹窗，执行点踩 (text={like_text[:40]})")
+                        self.log(f"OCR 识别到评价弹窗，执行取消 (text={like_text[:40]})")
+                        self.hw_press("down")
+                        time.sleep(0.15)
                         self.hw_press("down")
                         time.sleep(0.3)
                         self.hw_press("enter")
@@ -594,8 +619,10 @@ class RaceMixin:
             self.hw_key_up("w")
             self.hw_key_up("up")
 
-        self.log(f"OCR 识别到赛事评价弹窗，执行点踩 (text={like_text[:40]})")
-        self.hw_press("down")  # 默认高亮"点赞"，下移一格到"点踩"
+        self.log(f"OCR 识别到赛事评价弹窗，执行取消 (text={like_text[:40]})")
+        self.hw_press("down")  # 默认高亮"点赞"，下移到"点踩"
+        time.sleep(0.15)
+        self.hw_press("down")  # 再下移到"取消"
         time.sleep(0.3)
         self.hw_press("enter")
         time.sleep(0.8)

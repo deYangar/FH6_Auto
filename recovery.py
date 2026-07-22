@@ -15,10 +15,20 @@ class RecoveryMixin:
         try:
             CREATE_NO_WINDOW = 0x08000000
             cmd = 'tasklist /FI "IMAGENAME eq forzahorizon6.exe" /NH /FO CSV'
-            output = subprocess.check_output(cmd, shell=True, text=True, creationflags=CREATE_NO_WINDOW)
+            # 不用 check_output：tasklist 无匹配时某些 Windows 版本返回退出码 1，
+            # check_output 会直接抛 CalledProcessError，导致"游戏没开"和"命令失败"分不清
+            result = subprocess.run(cmd, shell=True, text=True, capture_output=True,
+                                    creationflags=CREATE_NO_WINDOW)
+            output = result.stdout or ""
+
+            if result.returncode != 0 and not output.strip():
+                self.log(f"[ERROR] tasklist 命令执行失败 (退出码={result.returncode})，"
+                         f"无法检测游戏进程。可能被杀毒软件拦截或系统策略限制。"
+                         f"stderr={result.stderr.strip()[:200] if result.stderr else '无'}")
+                return False
 
             if "forzahorizon6.exe" not in output.lower():
-                self.log("未发现 forzahorizon6.exe 进程!(请确保游戏已运行)")
+                self.log("[ERROR] 未发现 forzahorizon6.exe 进程！请确保游戏已启动并进入主界面后再开始任务。")
                 return False
 
             target_pid = None
@@ -29,9 +39,10 @@ class RecoveryMixin:
                     break
 
             if not target_pid:
-                self.log("找到进程但无法解析PID!")
+                self.log(f"[ERROR] 检测到游戏进程但无法解析 PID！tasklist 输出: {output.strip()[:200]}")
                 return False
 
+            self.log(f"已找到游戏进程 PID={target_pid}，正在查找游戏窗口...")
             hwnds = []
 
             def foreach_window(hwnd, lParam):
@@ -148,9 +159,11 @@ class RecoveryMixin:
                 return True
 
         except Exception as e:
-            self.log(f"检查进程异常: {e}")
+            self.log(f"[ERROR] 检查游戏进程异常: {e}")
             return False
 
+        self.log(f"[ERROR] 游戏进程已在运行 (PID={target_pid})，但未找到可见的游戏窗口。"
+                 f"请确保游戏不是最小化状态，且窗口标题包含 'Forza Horizon 6'。")
         return False
 
     def restart_game_and_boot(self, force_test=False):
