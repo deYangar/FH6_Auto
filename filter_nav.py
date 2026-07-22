@@ -55,6 +55,53 @@ def _norm_text(t):
     return "".join(str(t).split())
 
 
+# 常见 OCR 易混字符（OCR 输出 -> 正确字符），用于短目标容错
+_OCR_CHAR_CONFUSIONS = {
+    'I': '1', 'l': '1', '|': '1',
+    'O': '0', 'o': '0',
+    '5': 'S',
+    '8': 'B',
+    'Z': '2',
+}
+
+
+def _ocr_fuzzy_match(ocr_norm, target_norm):
+    """短目标（≤3 字符，如 S1/S2/A）OCR 容错匹配。
+
+    允许 1 个常见易混字符替换（S1->SI, S1->51）
+    或 1 个字符插入/删除（S1->S, S1->S11）。
+    长目标不走此路径，避免误匹配。
+    """
+    if len(target_norm) > 3 or not target_norm:
+        return False
+    ln_o, ln_t = len(ocr_norm), len(target_norm)
+    if abs(ln_o - ln_t) > 1:
+        return False
+    # 等长：逐字符比，允许 1 个常见替换
+    if ln_o == ln_t:
+        diffs = 0
+        for a, b in zip(ocr_norm, target_norm):
+            if a != b:
+                if _OCR_CHAR_CONFUSIONS.get(a) == b:
+                    diffs += 1
+                else:
+                    return False   # 非常见误读（如 S1 vs S2），拒绝
+        return diffs <= 1
+    # OCR 多 1 字符：删掉多出的那个能匹配就行
+    if ln_o == ln_t + 1:
+        for i in range(ln_o):
+            if ocr_norm[:i] + ocr_norm[i + 1:] == target_norm:
+                return True
+        return False
+    # OCR 少 1 字符：补上缺的那个能匹配就行
+    if ln_o == ln_t - 1:
+        for i in range(ln_t):
+            if target_norm[:i] + target_norm[i + 1:] == ocr_norm:
+                return True
+        return False
+    return False
+
+
 class FilterNavMixin:
     """筛选面板 OCR 视觉导航"""
 
@@ -346,11 +393,14 @@ class FilterNavMixin:
 
     @staticmethod
     def _text_matches(ocr_text, target_norm):
-        """OCR 文字与归一化目标匹配：完全相等或目标是其子串（容忍 OCR 噪声）"""
+        """OCR 文字与归一化目标匹配：完全相等 / 子串 / 短目标容错"""
         t = _norm_text(ocr_text)
         if not t:
             return False
-        return t == target_norm or target_norm in t
+        if t == target_norm or target_norm in t:
+            return True
+        # 短目标（S1, S2, A 等）容忍 1 个字符的常见 OCR 误读
+        return _ocr_fuzzy_match(t, target_norm)
 
     def _toggle_filter_target(self, target, label):
         """在当前打开的筛选面板中找到目标选项并勾选（Enter 切换复选框）"""
@@ -364,6 +414,7 @@ class FilterNavMixin:
     def _scroll_to_top(self):
         """向上翻页直到画面不再变化（列表顶部）"""
         last_key = None
+        last_panel_small = None
         for _ in range(_MAX_PAGES):
             if not self.is_running:
                 return
@@ -373,9 +424,20 @@ class FilterNavMixin:
                 continue
             lines = self._ocr_panel_lines(panel)
             key = tuple(_norm_text(l["text"]) for l in lines)
+            panel_small = cv2.resize(panel, (64, 64))
+            # 到顶判定：文字不变 且 像素不变（高亮也不再移动）
+            # 仅文字不变时可能是高亮在可见区内上移（列表未滚动），不能停
             if key and key == last_key:
-                return  # 画面不变，已到顶
+                if last_panel_small is not None:
+                    diff = np.abs(panel_small.astype(np.int16)
+                                  - last_panel_small.astype(np.int16))
+                    changed_px = int(np.count_nonzero(np.any(diff > 30, axis=2)))
+                    if changed_px <= 15:
+                        return  # 文字+像素都不变，到顶
+                else:
+                    return  # 首帧无上一步像素，退化为纯文字判断
             last_key = key
+            last_panel_small = panel_small
             for _ in range(10):
                 self.hw_press("up", delay=_PRESS_DELAY)
                 time.sleep(_PRESS_GAP)
@@ -389,14 +451,16 @@ class FilterNavMixin:
         高亮正好落在它上面 -> 此时直接 Enter 即命中目标，不会扫过再回头。
         保险：Enter 后用复选框像素差验证，没命中再按一次 Enter 回滚误勾，降级点击。
         终止条件：
-        - 画面不再变化 -> 列表到底（夹住），目标不存在
-        - 整页文字绕回已见过的页面 -> 列表循环，目标不存在
+        - 画面不再变化（文字+高亮位置+像素三重确认）-> 列表到底，目标不存在
+        - 整页文字绕回已见过的页面（≥3 步前且像素无变化）-> 列表循环，目标不存在
         """
         target_n = _norm_text(target)
-        seen_pages = set()
+        seen_pages = {}          # page_key -> 首次出现步数（循环检测用）
         last_page_key = None
         first_check = True
-        stuck_count = 0  # 连续画面不变计数（容错偶尔丢键：单次不变只重试，连续两次才判到底）
+        stuck_count = 0          # 连续画面不变计数
+        last_hl_idx = None       # 上一步高亮行下标（卡底检测辅助）
+        last_panel_small = None  # 上一步面板缩略图（像素差兜底）
 
         for step in range(_MAX_WALK_STEPS):
             if not self.is_running:
@@ -413,21 +477,52 @@ class FilterNavMixin:
             page_key = tuple(_norm_text(l["text"]) for l in lines)
             hl_idx = self._pick_highlight_line(panel, lines)
 
-            # 卡底检测：画面不变 -> 可能丢键（重试一次）或真的到底了（连续两次不变）
+            # 缩略图像素差：检测高亮移动/列表滚动（OCR 文字不变时的兜底信号）
+            panel_small = cv2.resize(panel, (64, 64))
+            img_changed = False
+            if last_panel_small is not None:
+                diff = np.abs(panel_small.astype(np.int16)
+                              - last_panel_small.astype(np.int16))
+                changed_px = int(np.count_nonzero(np.any(diff > 30, axis=2)))
+                img_changed = changed_px > 15
+
+            # ---- 卡底检测 ----
+            # 文字不变时，不能只看 page_key：高亮在可见区内移动时文字不变
+            # 但高亮行下标变了 / 像素有变化 → 说明在动，不是卡底
             if page_key == last_page_key:
-                stuck_count += 1
-                if stuck_count >= 2:
-                    self._save_filter_debug(panel, lines, hl_idx, f"{label}_{target}_stuck")
-                    return False
+                hl_moved = (hl_idx is not None and last_hl_idx is not None
+                            and hl_idx != last_hl_idx)
+                if hl_moved or img_changed:
+                    stuck_count = 0   # 高亮在移动 / 画面有变化，不是卡底
+                else:
+                    stuck_count += 1
+                    if stuck_count >= 2:
+                        self._save_filter_debug(panel, lines, hl_idx,
+                                                f"{label}_{target}_stuck")
+                        return False
                 self.hw_press("down", delay=_PRESS_DELAY)
                 time.sleep(_PRESS_GAP + 0.05)
+                last_hl_idx = hl_idx
+                last_panel_small = panel_small
                 continue
+
             stuck_count = 0
-            # 循环检测：整页绕回
+
+            # ---- 循环检测 ----
+            # 整页文字绕回已见过的页面 → 列表循环，目标不存在。
+            # 加两道保险防 OCR 噪声误判：
+            #   1) 步数门槛：≥3 步前见过才判循环（1~2 步内的重复多为 OCR 抖动）
+            #   2) 像素校验：画面有变化（高亮在动）时不判循环
             if page_key in seen_pages:
-                return False
-            seen_pages.add(page_key)
+                if step - seen_pages[page_key] >= 3 and not img_changed:
+                    return False
+                # 否则忽略（OCR 噪声或高亮移动中的偶然重复）
+            else:
+                seen_pages[page_key] = step
+
             last_page_key = page_key
+            last_hl_idx = hl_idx
+            last_panel_small = panel_small
 
             self._save_filter_debug(panel, lines, hl_idx, f"{label}_{target}_step{step}")
 
@@ -444,7 +539,7 @@ class FilterNavMixin:
                     return self._move_highlight_and_toggle(
                         panel, lines, hl_idx, tgt_idx, target_n, label
                     )
-                # 2) 目标是“本次按键刚入屏”：高亮贴底边 == 正好在目标行，直接 Enter
+                # 2) 目标是"本次按键刚入屏"：高亮贴底边 == 正好在目标行，直接 Enter
                 #    （Enter 后用复选框像素差验证；没命中会自动回滚 + 降级点击）
                 if not first_check:
                     self.log(f"[{label}] 目标刚入屏，高亮应在目标行，Enter 勾选: {target}")

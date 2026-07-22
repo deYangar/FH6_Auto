@@ -165,13 +165,13 @@ class FH_UltimateBot(
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 try:
                     ctx = ssl.create_default_context()
-                    with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                    with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
                         html = resp.read().decode("utf-8", errors="ignore")
                 except Exception:
                     ctx = ssl.create_default_context()
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
-                    with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                    with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
                         html = resp.read().decode("utf-8", errors="ignore")
 
                 # 从 HTML 中提取最新 release tag（如 v1.2.0.0）
@@ -202,8 +202,11 @@ class FH_UltimateBot(
                     self.ui_call(lambda: self._on_update_found(latest_tag, release_url, ""))
                 else:
                     self.ui_call(lambda: self._on_up_to_date())
+            except (TimeoutError, OSError) as e:
+                # 网络超时/连接失败：国内访问 GitHub 常见，非程序错误，静默降级
+                self.ui_call(lambda: self.log("[更新检查] 网络不通，跳过（不影响使用）"))
             except Exception as e:
-                # 写文件日志 + UI 日志双保险
+                # 非网络异常才写文件日志
                 try:
                     import traceback
                     with open(os.path.join(os.path.dirname(sys.executable), "update_debug.log"), "w", encoding="utf-8") as f:

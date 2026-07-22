@@ -112,9 +112,9 @@ class BuyMixin:
             self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
             self.hw_press("enter")
             time.sleep(1.0)
-        # 品牌进入车辆列表后，方案1往下滚4次，方案2滚1次
+        # 品牌进入车辆列表后，方案1往下滚5次，方案2滚1次
         _scheme_idx = self.config.get("current_scheme", 0)
-        _scroll_count = 4 if _scheme_idx == 0 else 1
+        _scroll_count = 5 if _scheme_idx == 0 else 1
         time.sleep(0.7)
         for _dn in range(_scroll_count):
             if not self.is_running:

@@ -741,21 +741,25 @@ class VisionMixin:
                     else:
                         self.log(f"[终极安全-拦截]: 总分={base_score:.3f} 顶部={score_top:.2f} 右下={score_bot:.2f} pos=({x},{y}) scale={scale:.3f}")
 
-            # 保存最终截图用于调试
-            import os as _os
-            _debug_dir = _os.path.join(APP_DIR, "debug", "ultimate_safe")
-            _os.makedirs(_debug_dir, exist_ok=True)
-            _stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time()*1000)%1000:03d}"
-            # 画标注：用最后一次 scale 的 points
-            _annotated = screen_bgr.copy()
-            for _px, _py, _pw, _ph, _ps in points:
-                cv2.rectangle(_annotated, (_px, _py), (_px+_pw, _py+_ph), (0, 255, 0), 2)
-                cv2.putText(_annotated, f"{scale:.2f}:{_ps:.2f}", (_px, _py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            _path = _os.path.join(_debug_dir, f"{_stamp}_annotated.png")
-            cv2.imwrite(_path, _annotated)
-            _path_raw = _os.path.join(_debug_dir, f"{_stamp}_raw.png")
-            cv2.imwrite(_path_raw, screen_bgr)
-            self.log(f"[终极安全] 保存调试截图: {_path} 候选总数={len(points)}")
+            # 保存最终截图用于调试（仅调试模式开启时）
+            _debug_enabled = False
+            if hasattr(self, "is_debug_screenshots_enabled"):
+                _debug_enabled = self.is_debug_screenshots_enabled()
+            if _debug_enabled:
+                import os as _os
+                _debug_dir = _os.path.join(APP_DIR, "debug", "ultimate_safe")
+                _os.makedirs(_debug_dir, exist_ok=True)
+                _stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time()*1000)%1000:03d}"
+                # 画标注：用最后一次 scale 的 points
+                _annotated = screen_bgr.copy()
+                for _px, _py, _pw, _ph, _ps in points:
+                    cv2.rectangle(_annotated, (_px, _py), (_px+_pw, _py+_ph), (0, 255, 0), 2)
+                    cv2.putText(_annotated, f"{scale:.2f}:{_ps:.2f}", (_px, _py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                _path = _os.path.join(_debug_dir, f"{_stamp}_annotated.png")
+                cv2.imwrite(_path, _annotated)
+                _path_raw = _os.path.join(_debug_dir, f"{_stamp}_raw.png")
+                cv2.imwrite(_path_raw, screen_bgr)
+                self.log(f"[终极安全] 保存调试截图: {_path} 候选总数={len(points)}")
 
             return None
         except Exception as e:
