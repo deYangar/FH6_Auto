@@ -782,13 +782,22 @@ class VisionMixin:
             return None
         try:
             screen_bgr = self.capture_region(region)
-            scales = []
-            for s in self.get_scales_to_try(fast_mode=False):
-                if s not in scales:
-                    scales.append(s)
-            for s in [1.0, 0.98, 1.02, 0.95, 1.05]:
-                if s not in scales:
-                    scales.append(s)
+
+            # v1.2.11.3: 缩放比缓存——前 2 辆强制全量搜索（不同车最佳 scale 可能不同），
+            # 第 3 辆起只搜缓存附近 5 个 scale，耗时从 ~5s 降到 <1s。
+            full_count = getattr(self, "_strict_car_full_count", 0)
+            cached_scale = getattr(self, "_strict_car_cached_scale", None)
+            if cached_scale and full_count >= 4:
+                scales = [round(cached_scale * f, 3) for f in (0.95, 0.98, 1.0, 1.02, 1.05)]
+                scales = [s for s in scales if 0.35 <= s <= 1.8]
+            else:
+                scales = []
+                for s in self.get_scales_to_try(fast_mode=False):
+                    if s not in scales:
+                        scales.append(s)
+                for s in [1.0, 0.98, 1.02, 0.95, 1.05]:
+                    if s not in scales:
+                        scales.append(s)
 
             profile = get_recognition_profile(self, "cj.strict_new_car")
             MAIN_THRESHOLD = float(profile.get("main_threshold", 0.82))
@@ -1101,7 +1110,16 @@ class VisionMixin:
                             "max_tag_loc": (int(car_x), int(car_y), int(w_m), int(h_m), float(car_score)),
                         },
                     )
+                # v1.2.11.3: 缓存最佳缩放比，前 2 辆全量搜索后第 3 辆起用缓存
+                self._strict_car_cached_scale = scale
+                self._strict_car_full_count = getattr(self, "_strict_car_full_count", 0) + 1
                 return (x, y)
+
+            # v1.2.11.3: 缓存 scale 搜索失败 → 回退全量搜索（仅一次机会）
+            if cached_scale:
+                self.log(f"[StrictCar] 缓存 scale={cached_scale:.3f} 未命中，回退全量搜索")
+                self._strict_car_cached_scale = None
+                return self.find_new_consumable_car_strict(region=region)
 
             self.log("[StrictCar] 本帧未找到达标目标车，返回 None（由翻页逻辑继续查找）")
             if debug_saved < 5:
@@ -1119,21 +1137,29 @@ class VisionMixin:
     def wait_for_new_consumable_car_strict(self, timeout=3, interval=0.2):
         """等待目标车，并用相邻帧空间一致性过滤菜单动画/hover 造成的瞬时误判。
 
-        v1.2.11.3: timeout 从首次找到目标后开始计时（多尺度搜索本身可能耗时 5s+，
-        不应吃掉确认窗口）。
+        v1.2.11.3: 双层超时——
+        - 确认窗口 timeout：首次找到目标后开始计时，用于连续帧确认
+        - 绝对超时 absolute_timeout：无论是否找到目标，总时间上限，
+          防止“永远找不到目标”时无限循环（如超抽次数>买车数）。
         """
         profile = get_recognition_profile(self, "cj.strict_new_car")
         required = max(1, int(profile.get("confirm_frames", 2)))
         max_distance = max(10, int(profile.get("confirm_distance", 70)))
         strong_threshold = float(profile.get("strong_threshold", 0.86))
-        start = None          # 首次找到目标后才开始计时
+        absolute_start = time.time()
+        absolute_timeout = 15.0   # 总时间上限：无目标时最多 3 轮全量搜索
+        confirm_start = None      # 首次找到目标后才开始确认倒计时
         last_pos = None
         confirmed = 0
         first_visual_pos = None
         first_visual_score = 0.0
         while self.is_running:
-            # 超时检查：首次找到目标后才启动倒计时
-            if start is not None and time.time() - start >= timeout:
+            # 绝对超时：无论是否找到目标，总时间到了就退出
+            if time.time() - absolute_start >= absolute_timeout:
+                self.log(f"[StrictCar-Confirm] 绝对超时 {absolute_timeout:.0f}s，退出等待")
+                break
+            # 确认窗口超时：找到目标后开始计时
+            if confirm_start is not None and time.time() - confirm_start >= timeout:
                 break
             pos = self.find_new_consumable_car_strict(region=self.regions["全界面"])
             if pos:
@@ -1149,7 +1175,7 @@ class VisionMixin:
                 if first_visual_pos is None:
                     first_visual_pos = pos
                     first_visual_score = confidence
-                    start = time.time()   # 首次找到目标，timeout 从此刻开始
+                    confirm_start = time.time()   # 首次找到目标，确认窗口从此刻开始
                 if last_pos and abs(pos[0] - last_pos[0]) <= max_distance and abs(pos[1] - last_pos[1]) <= max_distance:
                     confirmed += 1
                 else:
