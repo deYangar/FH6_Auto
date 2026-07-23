@@ -50,7 +50,7 @@ LOG_FILE = os.path.join(APP_DIR, "bot_log.txt")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
 TEMPLATE_CACHE_FILE = os.path.join(CACHE_DIR, "template_cache.pkl")
 TEMPLATE_META_FILE = os.path.join(CACHE_DIR, "template_meta.json")
-CURRENT_VERSION = "1.2.11.0"
+CURRENT_VERSION = "1.2.12"
 
 def auto_extract_configs():
     # 只从 APP_DIR 下的历史文件名迁移，不再使用 config/ 子目录

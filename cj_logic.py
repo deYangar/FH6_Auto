@@ -314,9 +314,11 @@ class CJMixin:
             if not self.is_running:
                 return False
             # ====== 根据下拉框判断进入方式 ======
-            cj_mode_str = "模式1"
-            if hasattr(self, "opt_cj_mode"):
-                cj_mode_str = self.opt_cj_mode.get()
+            # runner 线程不能读取 Tk 控件；启动时已固化到 _run_settings/config。
+            cj_mode = int(getattr(self, "_run_settings", {}).get(
+                "cj_mode", self.config.get("cj_mode", 1)
+            ))
+            cj_mode_str = "模式2" if cj_mode == 2 else "模式1"
 
             if "模式1" in cj_mode_str:
                 self.log("进入我的车辆.")
@@ -385,7 +387,7 @@ class CJMixin:
                     self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
                     self.hw_press("enter")
                     time.sleep(1.0)
-                jump_pages = max(0, self.memory_car_page - 1)
+                jump_pages = self.memory_car_page
 
                 if jump_pages > 0:
                     self.log(f"智能记忆触发:快速跳过前 {jump_pages} 页...")

@@ -667,7 +667,6 @@ class VisionMixin:
 
                 main_tpl_gray = cv2.cvtColor(main_tpl_bgr, cv2.COLOR_BGR2GRAY)
                 h_m, w_m = main_tpl_bgr.shape[:2]
-                h_a, w_a = anti_tpl_bgr.shape[:2]
 
                 if h_m < 10 or w_m < 10 or h_m > screen_bgr.shape[0] or w_m > screen_bgr.shape[1]:
                     continue
@@ -783,21 +782,30 @@ class VisionMixin:
             return None
         try:
             screen_bgr = self.capture_region(region)
-            scales = []
-            for s in self.get_scales_to_try(fast_mode=False):
-                if s not in scales:
-                    scales.append(s)
-            for s in [1.0, 0.98, 1.02, 0.95, 1.05]:
-                if s not in scales:
-                    scales.append(s)
 
-            # 阈值常量
-            MAIN_THRESHOLD = 0.85       # newCC 彩色主阈值
-            MAIN_GRAY_THRESHOLD = 0.62  # 灰度兜底阈值
-            MAIN_EDGE_THRESHOLD = 0.20  # 边缘兜底阈值
-            MAIN_FALLBACK_MIN = 0.70    # 彩色低于此值直接跳过，不兜底
-            TAG_THRESHOLD = 0.85        # NEW 角标内部验阈值
-            CLS_THRESHOLD = 0.85        # 等级标签内部验阈值
+            # v1.2.11.3: 缩放比缓存——前 2 辆强制全量搜索（不同车最佳 scale 可能不同），
+            # 第 3 辆起只搜缓存附近 5 个 scale，耗时从 ~5s 降到 <1s。
+            full_count = getattr(self, "_strict_car_full_count", 0)
+            cached_scale = getattr(self, "_strict_car_cached_scale", None)
+            if cached_scale and full_count >= 4:
+                scales = [round(cached_scale * f, 3) for f in (0.95, 0.98, 1.0, 1.02, 1.05)]
+                scales = [s for s in scales if 0.35 <= s <= 1.8]
+            else:
+                scales = []
+                for s in self.get_scales_to_try(fast_mode=False):
+                    if s not in scales:
+                        scales.append(s)
+                for s in [1.0, 0.98, 1.02, 0.95, 1.05]:
+                    if s not in scales:
+                        scales.append(s)
+
+            profile = get_recognition_profile(self, "cj.strict_new_car")
+            MAIN_THRESHOLD = float(profile.get("main_threshold", 0.82))
+            MAIN_GRAY_THRESHOLD = float(profile.get("gray_threshold", 0.60))
+            MAIN_EDGE_THRESHOLD = float(profile.get("edge_threshold", 0.18))
+            MAIN_FALLBACK_MIN = float(profile.get("main_fallback_min", 0.66))
+            TAG_THRESHOLD = float(profile.get("tag_threshold", 0.80))
+            CLS_THRESHOLD = float(profile.get("class_threshold", 0.80))
             TAG_PAD = 4
             CLS_PAD = 4
 
@@ -914,8 +922,7 @@ class VisionMixin:
             )
 
             # === Step 2: 串行验证 ===
-            best_candidate = None
-            best_candidate_score = 0.0
+            valid_candidates = []
             debug_saved = 0
 
             for scale, candidates, max_val, max_loc in parallel_results:
@@ -1038,14 +1045,11 @@ class VisionMixin:
                         f"tag={tag_score:.3f} cls={cls_score:.3f} scale={scale:.3f}"
                     )
 
-                    if effective_score > best_candidate_score:
-                        best_candidate_score = effective_score
-                        off_x = region[0] if region else 0
-                        off_y = region[1] if region else 0
-                        click_x = car_x + w_m // 2
-                        click_y = car_y + h_m // 2
-
-                        self.last_strict_car_meta = {
+                    off_x = region[0] if region else 0
+                    off_y = region[1] if region else 0
+                    click_x = car_x + w_m // 2 + off_x
+                    click_y = car_y + h_m // 2 + off_y
+                    candidate_meta = {
                             "tag_score": float(tag_score),
                             "class_score": float(cls_score),
                             "car_score": float(car_score),
@@ -1057,38 +1061,65 @@ class VisionMixin:
                             "card_y": int(car_y),
                             "card_w": int(w_m),
                             "card_h": int(h_m),
-                        }
-                        self.last_strict_car_click_points = [
-                            (int(click_x + off_x), int(click_y + off_y)),
-                            (int(car_x + int(w_m * 0.5) + off_x), int(car_y + int(h_m * 0.4) + off_y)),
-                            (int(car_x + int(w_m * 0.5) + off_x), int(car_y + int(h_m * 0.6) + off_y)),
-                            (int(car_x + cls_rel_x + w_c // 2 + off_x), int(car_y + cls_rel_y + h_c // 2 + off_y)),
-                        ]
-                        best_candidate = (click_x + off_x, click_y + off_y, car_x, car_y,
-                                          car_score, tag_score, cls_score, gray_score, edge_score, scale)
+                    }
+                    valid_candidates.append((
+                        int(click_x), int(click_y), float(effective_score), candidate_meta,
+                        (int(tx0), int(ty0), int(w_t), int(h_t), float(tag_score)),
+                        (int(cx0), int(cy0), int(w_c), int(h_c), float(cls_score)),
+                    ))
 
-                        if debug_saved < 5:
-                            debug_saved += 1
-                            self._save_strict_car_simple(
-                                f"locked_scale_{scale:.3f}",
-                                screen_bgr=screen_bgr,
-                                meta=self.last_strict_car_meta,
-                                anno={
-                                    "title": f"锁定目标 car={car_score:.2f} tag={tag_score:.2f} cls={cls_score:.2f}",
-                                    "tag_boxes": [(int(tx0), int(ty0), int(w_t), int(h_t), float(tag_score))],
-                                    "class_boxes": [(int(cx0), int(cy0), int(w_c), int(h_c), float(cls_score))],
-                                    "max_tag_loc": (int(car_x), int(car_y), int(w_m), int(h_m), float(car_score)),
-                                },
-                            )
-
-            if best_candidate:
-                x, y, car_x, car_y, car_score, tag_score, cls_score, gray_score, edge_score, scale = best_candidate
+            if valid_candidates:
+                # 视觉顺序优先，而不是“谁的模板分最高就选谁”。否则当前全新车分数稍低时
+                # 会直接跳到下一辆。先按列分组，再在列内从上到下；同一卡的多尺度重复
+                # 由位置顺序稳定落在一起。
+                ordered = self._sort_column_first(valid_candidates, x_idx=0, y_idx=1, tolerance=70)
+                x, y, _, selected_meta, tag_box, class_box = ordered[0]
+                self.last_strict_car_meta = selected_meta
+                car_x = selected_meta["card_x"]
+                car_y = selected_meta["card_y"]
+                w_m = selected_meta["card_w"]
+                h_m = selected_meta["card_h"]
+                scale = selected_meta["scale"]
+                car_score = selected_meta["car_score"]
+                tag_score = selected_meta["tag_score"]
+                cls_score = selected_meta["class_score"]
+                gray_score = selected_meta["gray_score"]
+                edge_score = selected_meta["edge_score"]
+                off_x = region[0] if region else 0
+                off_y = region[1] if region else 0
+                self.last_strict_car_click_points = [
+                    (int(x), int(y)),
+                    (int(car_x + int(w_m * 0.5) + off_x), int(car_y + int(h_m * 0.4) + off_y)),
+                    (int(car_x + int(w_m * 0.5) + off_x), int(car_y + int(h_m * 0.6) + off_y)),
+                ]
                 self.log(
                     f"[StrictCar] 最终锁定目标车: car=({car_x},{car_y}) "
                     f"car={car_score:.3f} tag={tag_score:.3f} cls={cls_score:.3f} "
-                    f"gray={gray_score:.3f} edge={edge_score:.3f} scale={scale:.3f}"
+                    f"gray={gray_score:.3f} edge={edge_score:.3f} scale={scale:.3f} "
+                    f"视觉顺序=1/{len(ordered)}"
                 )
+                if debug_saved < 5:
+                    self._save_strict_car_simple(
+                        f"locked_visual_first_scale_{scale:.3f}",
+                        screen_bgr=screen_bgr,
+                        meta=selected_meta,
+                        anno={
+                            "title": f"视觉首车 car={car_score:.2f} tag={tag_score:.2f} cls={cls_score:.2f}",
+                            "tag_boxes": [tag_box],
+                            "class_boxes": [class_box],
+                            "max_tag_loc": (int(car_x), int(car_y), int(w_m), int(h_m), float(car_score)),
+                        },
+                    )
+                # v1.2.11.3: 缓存最佳缩放比，前 2 辆全量搜索后第 3 辆起用缓存
+                self._strict_car_cached_scale = scale
+                self._strict_car_full_count = getattr(self, "_strict_car_full_count", 0) + 1
                 return (x, y)
+
+            # v1.2.11.3: 缓存 scale 搜索失败 → 回退全量搜索（仅一次机会）
+            if cached_scale:
+                self.log(f"[StrictCar] 缓存 scale={cached_scale:.3f} 未命中，回退全量搜索")
+                self._strict_car_cached_scale = None
+                return self.find_new_consumable_car_strict(region=region)
 
             self.log("[StrictCar] 本帧未找到达标目标车，返回 None（由翻页逻辑继续查找）")
             if debug_saved < 5:
@@ -1104,12 +1135,72 @@ class VisionMixin:
             return None
 
     def wait_for_new_consumable_car_strict(self, timeout=3, interval=0.2):
-        start = time.time()
-        while self.is_running and time.time() - start < timeout:
+        """等待目标车，并用相邻帧空间一致性过滤菜单动画/hover 造成的瞬时误判。
+
+        v1.2.11.3: 双层超时——
+        - 确认窗口 timeout：首次找到目标后开始计时，用于连续帧确认
+        - 绝对超时 absolute_timeout：无论是否找到目标，总时间上限，
+          防止“永远找不到目标”时无限循环（如超抽次数>买车数）。
+        """
+        profile = get_recognition_profile(self, "cj.strict_new_car")
+        required = max(1, int(profile.get("confirm_frames", 2)))
+        max_distance = max(10, int(profile.get("confirm_distance", 70)))
+        strong_threshold = float(profile.get("strong_threshold", 0.86))
+        absolute_start = time.time()
+        absolute_timeout = 15.0   # 总时间上限：无目标时最多 3 轮全量搜索
+        confirm_start = None      # 首次找到目标后才开始确认倒计时
+        last_pos = None
+        confirmed = 0
+        first_visual_pos = None
+        first_visual_score = 0.0
+        while self.is_running:
+            # 绝对超时：无论是否找到目标，总时间到了就退出
+            if time.time() - absolute_start >= absolute_timeout:
+                self.log(f"[StrictCar-Confirm] 绝对超时 {absolute_timeout:.0f}s，退出等待")
+                break
+            # 确认窗口超时：找到目标后开始计时
+            if confirm_start is not None and time.time() - confirm_start >= timeout:
+                break
             pos = self.find_new_consumable_car_strict(region=self.regions["全界面"])
             if pos:
-                return pos
-            time.sleep(interval)
+                meta = getattr(self, "last_strict_car_meta", None) or {}
+                confidence = min(
+                    float(meta.get("tag_score", 0.0) or 0.0),
+                    float(meta.get("class_score", 0.0) or 0.0),
+                    max(
+                        float(meta.get("car_score", 0.0) or 0.0),
+                        float(meta.get("gray_score", 0.0) or 0.0),
+                    ),
+                )
+                if first_visual_pos is None:
+                    first_visual_pos = pos
+                    first_visual_score = confidence
+                    confirm_start = time.time()   # 首次找到目标，确认窗口从此刻开始
+                if last_pos and abs(pos[0] - last_pos[0]) <= max_distance and abs(pos[1] - last_pos[1]) <= max_distance:
+                    confirmed += 1
+                else:
+                    confirmed = 1
+                last_pos = pos
+                self.log(
+                    f"[StrictCar-Confirm] pos={pos} 连续帧={confirmed}/{required} "
+                    f"综合最低分={confidence:.3f}"
+                )
+                if confirmed >= required:
+                    return pos
+            else:
+                confirmed = 0
+                last_pos = None
+            sleep_end = time.time() + interval
+            while self.is_running and time.time() < sleep_end:
+                time.sleep(0.05)
+
+        # 超时前若出现过一次非常强的候选，允许保守回退，避免低帧率机器永久漏车。
+        if first_visual_pos and first_visual_score >= strong_threshold:
+            self.log(
+                f"[StrictCar-Confirm] 连续帧不足但视觉首车为强候选，保守采用: "
+                f"pos={first_visual_pos} score={first_visual_score:.3f}"
+            )
+            return first_visual_pos
         return None
 
     def to_gray_image(self, img):

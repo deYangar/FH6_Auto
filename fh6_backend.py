@@ -95,16 +95,26 @@ class BackgroundInputManager:
         self._repeat_counts = {}
         self._running = False
         self._thread = None
+        self._stop_event = threading.Event()
 
     def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
         self._running = True
-        self._thread = threading.Thread(target=self._repeat_loop, daemon=True)
+        self._thread = threading.Thread(target=self._repeat_loop, name="fh6-bg-input", daemon=True)
         self._thread.start()
 
     def stop(self):
         self._running = False
+        self._stop_event.set()
         for key in list(self._pressed_keys):
             self.key_up(key)
+        thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        if not thread or not thread.is_alive():
+            self._thread = None
 
     def key_down(self, key):
         """按住按键（加入重复循环）"""
@@ -200,10 +210,10 @@ class BackgroundInputManager:
 
     def _repeat_loop(self):
         """每 50ms 给所有按住的键重发 KEYDOWN"""
-        while self._running:
+        while self._running and not self._stop_event.is_set():
             for key in list(self._pressed_keys):
                 self._send_key(key, down=True, is_repeat=True)
-            time.sleep(0.05)
+            self._stop_event.wait(0.05)
 
 
 # ====== 后台截图（PrintWindow flag=3）======
@@ -226,6 +236,12 @@ def _release_capture_cache():
         except Exception:
             pass
     c.update(hwnd=None, w=0, h=0, hwnd_dc=None, mfc_dc=None, save_dc=None, bmp=None)
+
+
+def release_capture_cache():
+    """在线程停止后安全释放 PrintWindow 的 GDI 缓存。"""
+    with _capture_lock:
+        _release_capture_cache()
 
 
 def _capture_once(hwnd, w, h, use_cache):

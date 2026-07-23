@@ -105,7 +105,7 @@ class RaceMixin:
         """实时读取分享码输入前等待时间（优先从 UI 控件读取）"""
         if hasattr(self, "entry_sharecode_timeout"):
             try:
-                return max(1, int(self.entry_sharecode_timeout.get()))
+                return max(1, int(self.config.get("sharecode_timeout", 10)))
             except (ValueError, TypeError):
                 pass
         try:
@@ -298,7 +298,7 @@ class RaceMixin:
         # ====== 阶段3：搜索并进入（Xbox 前台输入分享码）======
         self.log("阶段3: 搜索赛事...")
 
-        code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
+        code_text = "".join(c for c in str(self.config.get("share_code", "")) if c.isdigit())
         self.log(f"输入分享码: {code_text}")
 
         if not self.input_share_code_foreground(code_text):

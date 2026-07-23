@@ -56,6 +56,8 @@ MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
 PAGE_READWRITE = 0x04
 INFINITE = 0xFFFFFFFF
+WAIT_TIMEOUT = 0x00000102
+REMOTE_THREAD_TIMEOUT_MS = 5000
 TH32CS_SNAPMODULE = 0x00000008
 TH32CS_SNAPMODULE32 = 0x00000010
 
@@ -158,7 +160,9 @@ def inject_dll(pid, dll_path):
             raise OSError(f"CreateRemoteThread failed, err={ctypes.get_last_error()}")
 
         try:
-            WaitForSingleObject(h_thread, INFINITE)
+            wait_result = WaitForSingleObject(h_thread, REMOTE_THREAD_TIMEOUT_MS)
+            if wait_result == WAIT_TIMEOUT:
+                raise TimeoutError("注入 Hook 超时（5 秒）")
         finally:
             CloseHandle(h_thread)
         return True
@@ -208,7 +212,9 @@ def unload_dll(pid, dll_name):
             raise OSError(f"CreateRemoteThread(FreeLibrary) failed, err={ctypes.get_last_error()}")
 
         try:
-            WaitForSingleObject(h_thread, INFINITE)
+            wait_result = WaitForSingleObject(h_thread, REMOTE_THREAD_TIMEOUT_MS)
+            if wait_result == WAIT_TIMEOUT:
+                raise TimeoutError("卸载 Hook 超时（5 秒）")
             code = wintypes.DWORD(0)
             if GetExitCodeThread(h_thread, ctypes.byref(code)) and code.value == 0:
                 raise OSError("FreeLibrary 返回失败，Hook 可能仍在目标进程中")
@@ -222,8 +228,25 @@ def unload_dll(pid, dll_name):
 def hook_process(pid):
     is64 = is_process_64bit(pid)
     dll_path = get_dll_path(is64)
+    dll_name = os.path.basename(dll_path)
+    # 上次工具异常退出时 DLL 可能仍留在游戏中。复用已有模块，避免重复注入同名 Hook。
+    existing_module = find_remote_module(pid, dll_name)
+    if existing_module:
+        return {
+            "pid": int(pid),
+            "dll_name": dll_name,
+            "dll_path": dll_path,
+            "bits": 64 if is64 else 32,
+            "reused": True,
+        }
     inject_dll(pid, dll_path)
-    return {"pid": int(pid), "dll_name": os.path.basename(dll_path), "dll_path": dll_path, "bits": 64 if is64 else 32}
+    return {
+        "pid": int(pid),
+        "dll_name": dll_name,
+        "dll_path": dll_path,
+        "bits": 64 if is64 else 32,
+        "reused": False,
+    }
 
 
 def unhook_process(pid, dll_name):

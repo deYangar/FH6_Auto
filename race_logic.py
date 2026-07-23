@@ -239,7 +239,7 @@ class RaceMixin:
         self.log("阶段2完成: 已进入 EventLab")
 
         # ====== 阶段3：搜索并进入 ======
-        code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
+        code_text = "".join(c for c in str(self.config.get("share_code", "")) if c.isdigit())
         if not self._input_share_code(code_text):
             return False
 

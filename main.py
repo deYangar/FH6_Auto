@@ -27,6 +27,7 @@ import pydirectinput
 from pynput import keyboard
 import threading
 import focus_hook_manager
+from fh6_backend import release_capture_cache
 
 from config import (
     APP_DIR, INTERNAL_DIR, USER_CONFIG_FILE, CURRENT_VERSION,
@@ -88,6 +89,11 @@ class FH_UltimateBot(
         self.is_running = False
         self.current_thread = None
         self.is_paused = False  # <--- 【新增】全局暂停状态
+        self._pipeline_lock = threading.RLock()
+        self._pipeline_cleanup_complete = True
+        self._pending_start_step = None
+        self._pending_start_poll_scheduled = False
+        self._run_settings = {}
         self.game_hwnd = None   # <--- 【后台化】游戏窗口句柄
         self.diagnostic_trace = None  # 诊断会话（None=未开启）
         self.bg_input = None    # <--- 【后台化】后台输入管理器
@@ -690,19 +696,11 @@ class FH_UltimateBot(
     # ====== 方案管理结束 ======
 
     def is_debug_screenshots_enabled(self):
-        if hasattr(self, "var_debug_screenshots"):
-            try:
-                return bool(self.var_debug_screenshots.get())
-            except Exception:
-                pass
+        # 业务线程不能直接读取 Tk 变量；start_pipeline/save_config 已在 UI 线程同步到 config。
         return bool(self.config.get("debug_screenshots", False))
 
     def is_diagnostic_mode_enabled(self):
-        if hasattr(self, "var_diagnostic_mode"):
-            try:
-                return bool(self.var_diagnostic_mode.get())
-            except Exception:
-                pass
+        # 避免后台线程跨线程调用 Tcl，Windows 下会导致偶发原生崩溃。
         return bool(self.config.get("diagnostic_mode", False))
 
     def capture_diagnostic_snapshot(self, name, *, region=None, image_bgr=None,
@@ -810,7 +808,8 @@ class FH_UltimateBot(
                 self.unload_focus_hook()
             info = focus_hook_manager.hook_process(pid)
             self.focus_hook_info = info
-            self.log(f"🪝 Focus Hook 已注入 | PID={pid} | {info['bits']}位 | {info['dll_name']}")
+            action = "已复用残留" if info.get("reused") else "已注入"
+            self.log(f"🪝 Focus Hook {action} | PID={pid} | {info['bits']}位 | {info['dll_name']}")
             return True
         except Exception as e:
             self.log(f"⚠️ Focus Hook 注入失败: {e}")
@@ -837,15 +836,27 @@ class FH_UltimateBot(
             self.check_and_focus_game()
 
     def on_app_close(self):
+        if getattr(self, "_app_close_pending", False):
+            return
+        self._app_close_pending = True
         try:
             self.stop_all()
         except Exception:
             pass
-        try:
-            self.unload_focus_hook()
-        except Exception:
-            pass
-        self.destroy()
+
+        def _finish_close_when_safe():
+            thread = self.current_thread
+            if thread and thread.is_alive():
+                self.after(100, _finish_close_when_safe)
+                return
+            try:
+                self.unload_focus_hook()
+            except Exception:
+                pass
+            self.destroy()
+
+        # 不在 runner 尚未退出时销毁 Tk/Win32 资源。
+        _finish_close_when_safe()
 
     def setup_ui(self):
         self.configure(fg_color="#0F141B")
@@ -1743,16 +1754,77 @@ class FH_UltimateBot(
         self.log(f"[Diagnostic] 诊断报告已保存: {trace['report_dir']}")
         self.diagnostic_trace = None
 
-    def start_pipeline(self, start_step):
-        if self.is_running:
+    def _schedule_pending_pipeline_start(self):
+        """旧 runner 完全退出后，再启动用户刚请求的新任务。"""
+        if self._pending_start_poll_scheduled:
             return
+        self._pending_start_poll_scheduled = True
+
+        def _poll():
+            self._pending_start_poll_scheduled = False
+            thread = self.current_thread
+            if thread and thread.is_alive():
+                self._schedule_pending_pipeline_start()
+                return
+            start_step = self._pending_start_step
+            self._pending_start_step = None
+            if start_step:
+                self.log(f"旧任务资源已释放，开始新任务: {start_step}")
+                self.start_pipeline(start_step)
+
+        self.after(200, _poll)
+
+    def _snapshot_run_settings(self):
+        """在 UI 线程一次性读取设置，runner 后续不再直接访问 Tk 控件。"""
+        return {
+            "total_loops": int(self.config.get("global_loops", 10)),
+            "counts": {
+                "race": int(self.config.get("race_count", 99)),
+                "buy": int(self.config.get("buy_count", 30)),
+                "cj": int(self.config.get("cj_count", 30)),
+                "sell": int(self.config.get("sell_count", 30)),
+            },
+            "continue": [
+                bool(self.config.get("chk_1", False)),
+                bool(self.config.get("chk_2", False)),
+                bool(self.config.get("chk_3", False)),
+                bool(self.config.get("chk_4", False)),
+            ],
+            "next": [
+                int(self.config.get("next_1", 2)),
+                int(self.config.get("next_2", 3)),
+                int(self.config.get("next_3", 4)),
+                int(self.config.get("next_4", 1)),
+            ],
+            "cj_mode": int(self.config.get("cj_mode", 1)),
+            "auto_close_game": bool(self.config.get("auto_close_game", False)),
+            "auto_shutdown": bool(self.config.get("auto_shutdown", False)),
+        }
+
+    def start_pipeline(self, start_step):
+        with self._pipeline_lock:
+            thread = self.current_thread
+            if thread and thread.is_alive():
+                if self.is_running:
+                    if self.is_paused:
+                        self._pending_start_step = start_step
+                        self.log("当前任务处于暂停状态：先安全终止旧任务，再自动启动新任务。")
+                        self.stop_all()
+                        self._schedule_pending_pipeline_start()
+                    return
+                self._pending_start_step = start_step
+                self.log("上一任务仍在释放截图/OCR/输入资源，新任务将自动稍后启动。")
+                self._schedule_pending_pipeline_start()
+                return
 
         self.is_running = True
         self.save_config()
+        self._run_settings = self._snapshot_run_settings()
+        self._pipeline_cleanup_complete = False
         self.start_anti_cheat_heartbeat()
 
         # OCR 加速选项
-        self.use_directml = self.var_directml.get()
+        self.use_directml = bool(self.config.get("use_directml", True))
 
         self.reset_run_stats()
         self.update_running_state("running")
@@ -1764,7 +1836,7 @@ class FH_UltimateBot(
         self.sc_count = 0
         self.global_loop_current = 0
 
-        def runner():
+        def runner_body():
             task_finished_normally = False
             self.start_diagnostic_trace_session(f"pipeline_{start_step}")
             if not self.check_and_focus_game():
@@ -1775,10 +1847,7 @@ class FH_UltimateBot(
             steps = ["race", "buy", "cj", "sell"]
             curr_idx = steps.index(start_step)
 
-            try:
-                total_loops = int(self.entry_global_loop.get())
-            except Exception:
-                total_loops = self.config.get("global_loops", 10)
+            total_loops = self._run_settings["total_loops"]
             self.global_loop_current = 1
             self.ui_call(self.lbl_runtime_loop.configure, text=f"{self.global_loop_current} / {total_loops}")
 
@@ -1793,13 +1862,13 @@ class FH_UltimateBot(
 
                 try:
                     if step_name == "race":
-                        success = self.logic_race(int(self.entry_race.get()))
+                        success = self.logic_race(self._run_settings["counts"]["race"])
                     elif step_name == "buy":
-                        success = self.logic_buy_car(int(self.entry_car.get()))
+                        success = self.logic_buy_car(self._run_settings["counts"]["buy"])
                     elif step_name == "cj":
-                        success = self.logic_super_wheelspin(int(self.entry_cj.get()))
+                        success = self.logic_super_wheelspin(self._run_settings["counts"]["cj"])
                     elif step_name == "sell":
-                        success = self.find_and_remove_consumable_car(int(self.entry_sc.get()))
+                        success = self.find_and_remove_consumable_car(self._run_settings["counts"]["sell"])
                 except Exception as e:
                     import traceback
                     self.log(f"执行模块 {step_name} 时异常: {e}")
@@ -1832,23 +1901,23 @@ class FH_UltimateBot(
                 # ====== 核心流转与无限循环逻辑 ======
                 next_idx = curr_idx + 1 # 默认前往下一步
                 if curr_idx == 0:
-                    if self.var_chk1.get():
-                        try: next_idx = max(0, min(4, int(self.entry_next1.get()) - 1))
+                    if self._run_settings["continue"][0]:
+                        try: next_idx = max(0, min(4, self._run_settings["next"][0] - 1))
                         except Exception: next_idx = 1
                     else: break
                 elif curr_idx == 1:
-                    if self.var_chk2.get():
-                        try: next_idx = max(0, min(4, int(self.entry_next2.get()) - 1))
+                    if self._run_settings["continue"][1]:
+                        try: next_idx = max(0, min(4, self._run_settings["next"][1] - 1))
                         except Exception: next_idx = 2
                     else: break
                 elif curr_idx == 2:
-                    if self.var_chk3.get():
-                        try: next_idx = max(0, min(4, int(self.entry_next3.get()) - 1))
+                    if self._run_settings["continue"][2]:
+                        try: next_idx = max(0, min(4, self._run_settings["next"][2] - 1))
                         except Exception: next_idx = 3
                     else: break
                 elif curr_idx == 3:
-                    if self.var_chk4.get():
-                        try: next_idx = max(0, min(3, int(self.entry_next4.get()) - 1))
+                    if self._run_settings["continue"][3]:
+                        try: next_idx = max(0, min(3, self._run_settings["next"][3] - 1))
                         except Exception: next_idx = 0
                     else: break
 
@@ -1884,7 +1953,7 @@ class FH_UltimateBot(
 
             # ====== 任务完成后自动关游戏/关机 ======
             if task_finished_normally and self.is_running:
-                if self.var_auto_close.get():
+                if self._run_settings["auto_close_game"]:
                     self.log("【任务圆满完成】已开启自动关游戏，30秒后强制关闭游戏...")
                     for _ in range(30):
                         if not self.is_running: break
@@ -1896,28 +1965,35 @@ class FH_UltimateBot(
                             time.sleep(2)
                         except Exception as e:
                             self.log(f"关闭游戏失败: {e}")
-                if self.var_auto_shutdown.get() and self.is_running:
+                if self._run_settings["auto_shutdown"] and self.is_running:
                     self.log("【任务圆满完成】触发自动关机！系统将在 3 分钟后关闭！")
                     self.log("提示：如需取消关机，请按 Win+R 键，输入 shutdown -a 并回车。")
                     os.system("shutdown -s -f -t 180")
             # ==============================================
             self.stop_all()
 
-        self.current_thread = threading.Thread(target=runner, daemon=True)
+        def runner():
+            try:
+                runner_body()
+            except BaseException as e:
+                import traceback
+                self.log(f"任务线程发生未处理异常: {e}", level="ERROR")
+                self.log(f"[PIPELINE-TRACEBACK]\n{traceback.format_exc()}", level="ERROR")
+            finally:
+                self.stop_all()
+                with self._pipeline_lock:
+                    if self.current_thread is threading.current_thread():
+                        self.current_thread = None
+                self.ui_call(self._schedule_pending_pipeline_start)
+
+        self.current_thread = threading.Thread(target=runner, name="fh6-pipeline", daemon=True)
         self.current_thread.start()
 
     def stop_all(self):
-        if not self.is_running:
-            return
-
+        was_running = self.is_running
         self.is_running = False
         self.is_paused = False  # <--- 【新增】彻底停止时必须解除暂停锁
         self.stop_anti_cheat_heartbeat()
-        self.finish_diagnostic_trace_session()
-
-        # 清理 OCR 引擎
-        if hasattr(self, 'stop_ocr_engine'):
-            self.stop_ocr_engine()
 
         for key in list(DIK_CODES.keys()) + ["w", "e", "y", "enter", "esc", "up", "down", "left", "right", "space", "backspace"]:
             self.hw_key_up(key)
@@ -1926,6 +2002,32 @@ class FH_UltimateBot(
             pydirectinput.mouseUp()
         except Exception:
             pass
+
+        thread = self.current_thread
+        called_from_runner = thread is threading.current_thread()
+        if thread and thread.is_alive() and not called_from_runner:
+            if was_running:
+                self.update_running_ui("正在停止，等待后台资源退出...")
+                self.log("已发送停止信号，等待当前任务线程安全退出。")
+            return
+
+        with self._pipeline_lock:
+            if self._pipeline_cleanup_complete:
+                return
+            self._pipeline_cleanup_complete = True
+
+        self.finish_diagnostic_trace_session()
+
+        # OCR 和 GDI 资源只能在业务线程完全停止后释放，避免与推理/截图并发析构。
+        if hasattr(self, 'stop_ocr_engine'):
+            self.stop_ocr_engine()
+        if self.bg_input:
+            self.bg_input.stop()
+            self.bg_input = None
+        try:
+            release_capture_cache()
+        except Exception as e:
+            self.log(f"释放截图缓存失败: {e}", level="WARN")
 
         self.finalize_active_task_time()
         self.ui_call(self.update_running_state, "idle")
@@ -1990,5 +2092,20 @@ class FH_UltimateBot(
 
 
 if __name__ == "__main__":
+    # 防止两个实例同时管理同一个游戏窗口、重复注入 Hook 和并发占用 GDI/OCR 资源。
+    _single_instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\FH6Auto.SingleInstance")
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        ctypes.windll.user32.MessageBoxW(0, "FH6Auto 已经在运行。请先关闭现有实例。", "FH6Auto", 0x30)
+        sys.exit(0)
     app = FH_UltimateBot()
+    if "--smoke-test" in sys.argv:
+        # 打包后由进程自身触发关闭，避免外部非管理员进程的 WM_CLOSE 被 UIPI 拦截。
+        app.config["focus_hook_enabled"] = False
+        app.config["use_directml"] = False
+        try:
+            app.var_focus_hook.set(False)
+            app.var_directml.set(False)
+        except Exception:
+            pass
+        app.after(5000, app.on_app_close)
     app.mainloop()
