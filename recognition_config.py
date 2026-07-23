@@ -31,7 +31,7 @@ DEFAULT_RECOGNITION_PROFILES = {
     # 超抽目标车：适度放宽单帧阈值，但必须连续两帧落在同一车卡，兼顾漏识别与误识别。
     "cj.strict_new_car": {
         "main_threshold": 0.82,
-        "main_fallback_min": 0.66,
+        "main_fallback_min": 0.80,
         "gray_threshold": 0.60,
         "edge_threshold": 0.18,
         "tag_threshold": 0.80,
