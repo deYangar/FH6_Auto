@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      tag_prefix:
+        description: 'Tag prefix (v=official, test-v=test)'
+        required: false
+        default: 'v'
+        type: string
+      target_branch:
+        description: 'Release target branch'
+        required: false
+        default: 'main'
+        type: string
 
 jobs:
   build:
@@ -123,7 +134,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.meta.outputs.version }}"
-          TAG="v${VERSION}"
+          TAG_PREFIX="${{ github.event.inputs.tag_prefix || 'v' }}"
+          TAG="${TAG_PREFIX}${VERSION}"
+          TARGET="${{ github.event.inputs.target_branch || 'main' }}"
           PRERELEASE="${{ steps.meta.outputs.prerelease }}"
           ARGS=""
           if [ "$PRERELEASE" = "true" ]; then
@@ -135,4 +148,4 @@ jobs:
             --title "v$VERSION" \
             --notes-file release_body.md \
             $ARGS \
-            --target main
+            --target "$TARGET"
