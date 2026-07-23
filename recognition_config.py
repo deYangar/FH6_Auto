@@ -38,7 +38,7 @@ DEFAULT_RECOGNITION_PROFILES = {
         "class_threshold": 0.80,
         "confirm_frames": 2,
         "confirm_distance": 70,
-        "strong_threshold": 0.86,
+        "strong_threshold": 0.80,
     },
     "matcher.skillcar_like_combo": {"main_threshold": 0.78, "like_threshold": 0.75, "final_threshold": 0.75, "fast_mode": True},
     "matcher.skillcar_switch_rc": {"threshold": 0.70, "timeout": 2.0, "interval": 0.2, "fast_mode": True},

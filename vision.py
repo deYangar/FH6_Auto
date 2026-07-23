@@ -1117,17 +1117,24 @@ class VisionMixin:
             return None
 
     def wait_for_new_consumable_car_strict(self, timeout=3, interval=0.2):
-        """等待目标车，并用相邻帧空间一致性过滤菜单动画/hover 造成的瞬时误判。"""
+        """等待目标车，并用相邻帧空间一致性过滤菜单动画/hover 造成的瞬时误判。
+
+        v1.2.11.3: timeout 从首次找到目标后开始计时（多尺度搜索本身可能耗时 5s+，
+        不应吃掉确认窗口）。
+        """
         profile = get_recognition_profile(self, "cj.strict_new_car")
         required = max(1, int(profile.get("confirm_frames", 2)))
         max_distance = max(10, int(profile.get("confirm_distance", 70)))
         strong_threshold = float(profile.get("strong_threshold", 0.86))
-        start = time.time()
+        start = None          # 首次找到目标后才开始计时
         last_pos = None
         confirmed = 0
         first_visual_pos = None
         first_visual_score = 0.0
-        while self.is_running and time.time() - start < timeout:
+        while self.is_running:
+            # 超时检查：首次找到目标后才启动倒计时
+            if start is not None and time.time() - start >= timeout:
+                break
             pos = self.find_new_consumable_car_strict(region=self.regions["全界面"])
             if pos:
                 meta = getattr(self, "last_strict_car_meta", None) or {}
@@ -1142,6 +1149,7 @@ class VisionMixin:
                 if first_visual_pos is None:
                     first_visual_pos = pos
                     first_visual_score = confidence
+                    start = time.time()   # 首次找到目标，timeout 从此刻开始
                 if last_pos and abs(pos[0] - last_pos[0]) <= max_distance and abs(pos[1] - last_pos[1]) <= max_distance:
                     confirmed += 1
                 else:
