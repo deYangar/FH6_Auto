@@ -387,7 +387,7 @@ class CJMixin:
                     self.log(f"品牌仍停留在制造商列表，补 Enter 进入车辆列表 ({retry + 1}/3)")
                     self.hw_press("enter")
                     time.sleep(1.0)
-                jump_pages = max(0, self.memory_car_page - 1)
+                jump_pages = self.memory_car_page
 
                 if jump_pages > 0:
                     self.log(f"智能记忆触发:快速跳过前 {jump_pages} 页...")
