@@ -114,6 +114,66 @@
 
 ---
 
+## 配置文件说明（config.json）
+
+程序运行目录下的 `config.json` 保存全部配置。它由程序在**每次改动界面控件时自动重写**（`json.dump` 整个字典），因此：
+
+- 顶层字段会与 `schemes[当前方案]` **自动互相同步**，带「自动同步」标注的字段无需手改。
+- 缺失的字段会在启动时自动补全默认值，旧版配置自动迁移。
+
+> ⚠️ **不要给 config.json 加 `//` 或 `#` 注释。** 程序用标准 `json.load` 解析，遇到注释会判定「配置损坏」并**自动把整套配置重置为默认值**（方案、次数、分享码全部丢失）。
+>
+> 想知道每个字段的含义，请对照仓库里的 **`config.example.json`**（带行内中文注释，仅供对照参考，**不要直接改名成 config.json**），或看下方字段表。
+
+### 顶层字段
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `current_scheme` | int | 0 | 当前方案索引（0=方案1，1=方案2） |
+| `schemes` | array | — | 方案列表，每项字段见下表 |
+| `global_loops` | int | 10 | 全局循环次数（整个流程跑多少轮） |
+| `auto_restart` | bool | false | 游戏掉线/崩溃时自动重启 |
+| `restart_cmd` | string | `start steam://run/2483190` | 自动重启游戏的命令 |
+| `race_timeout` | int | 600 | 单局跑图超时检测（秒） |
+| `race_start_wait` | int | 15 | 每轮发车前等待时长（秒），等游戏展示车辆+加载，加载慢的机器可调大 |
+| `stuck_timeout` | int | 60 | 卡死检测超时（秒，最小 10） |
+| `debug_screenshots` | bool | false | 调试截图开关（保存识别截图到 debug/） |
+| `focus_hook_enabled` | bool | false | 窗口焦点钩子（保持游戏窗口可后台截图/发键） |
+| `auto_close_game` | bool | false | 任务完成后自动关闭游戏 |
+| `auto_shutdown` | bool | false | 任务完成后自动关机 |
+| `diagnostic_mode` | bool | false | 诊断模式（输出详细追踪日志） |
+| `use_directml` | bool | true | DirectML 加速 OCR（占少量显存） |
+| `sharecode_timeout` | int | 10 | 输入分享码前等待秒数（仅 Xbox 版） |
+| `class_image` / `race_count` / `buy_count` / `cj_count` / `sell_count` / `skill_dirs` / `share_code` / `cj_mode` / `chk_1~4` / `next_1~4` / `name` | — | — | **自动同步**自 `schemes[当前方案]`，无需手改 |
+
+### 流程阶段字段（四阶段串联）
+
+四个阶段：**1.循环跑图(race) → 2.批量买车(buy) → 3.超级抽奖(cj) → 4.移除车辆(sell)**。每个阶段有一组 `计数 + 继续开关 + 跳转目标`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `race_count` / `buy_count` / `cj_count` / `sell_count` | int | 对应阶段的执行次数（局数/台数/抽数） |
+| `chk_1`~`chk_4` | bool | 该阶段跑完后**是否继续**到下一阶段；为 false 则流程在此停止 |
+| `next_1`~`next_4` | int | 继续时**跳转到的阶段号**（1=跑图 2=买车 3=超抽 4=删车）。默认 `1→2→3→4→1` 成环；`next_4` 填 1~3 跳回前序阶段，填 4 或更大则继续删车 |
+
+> 例：默认配置下跑图(1)跑完跳买车(2)，买车跑完跳超抽(3)，超抽跑完跳删车(4)，删车跑完回到跑图(1)，如此循环 `global_loops` 轮。把某个 `chk_N` 设为 false 即可让流程在第 N 阶段后停下。
+
+### 方案字段（schemes 数组每一项）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | string | 方案名称（仅显示用） |
+| `class_image` | string | 车辆等级图标模板（方案1 `classS2829.png`=S2，方案2 `classS1702.png`=S1） |
+| `race_count`/`buy_count`/`cj_count`/`sell_count` | int | 本方案各阶段执行次数 |
+| `skill_dirs` | array | 技能树点击顺序（`up`/`down`/`left`/`right`） |
+| `share_code` | string | 跑图蓝图数字代码 |
+| `cj_mode` | int | 超级抽奖模式：1=从我的车辆开始，2=从设计与喷涂开始 |
+| `chk_1`~`chk_4` / `next_1`~`next_4` | bool/int | 本方案的阶段串联设置（含义同上） |
+| `sell_filter` | array | 删车筛选选项（OCR 视觉导航目标，须与游戏筛选面板文字一致） |
+| `race_filter` | array | 跑图筛选选项（OCR 视觉导航目标，须与游戏筛选面板文字一致） |
+
+---
+
 ## 技术细节
 
 ### OCR 引擎
@@ -195,6 +255,34 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 ---
 
 ## 更新日志
+
+### v1.2.13 (2026-07-24)
+
+**⚙️ 发车前等待可自定义**
+- 新增配置项 `race_start_wait`（默认 15 秒）：跑图每轮发车前的等待时长改读此值，加载慢的机器可调大、想跑快可调小
+- Steam 版与 Xbox 版跑图逻辑同步支持，日志「等待赛事加载(Ns)」实时反映实际等待值
+- 不加界面控件，直接改 config.json；非法值自动回退 15，负值按 0 处理
+
+**📄 配置文档**
+- 新增 `config.example.json`：全部字段带行内中文注释，仅供对照参考（含 // 注释，禁止直接改名为 config.json，否则会被判定配置损坏重置）
+- README 新增「配置文件说明」章节：顶层字段 / 流程阶段字段（chk_N、next_N 串联逻辑）/ 方案字段三张表
+
+### v1.2.12 (2026-07-23)
+
+**筛选导航修复**
+- 像素级卡底检测（不依赖 OCR 文本精确匹配）+ page_key 模糊比较，彻底解决 OCR 抖动死循环
+- 校正扫描收缩（↑8+↓16 → ↑3+↓6）、筛选面板下移 32px 修正底部截断、步数上限 80→62
+
+**超级抽奖优化**
+- scale 缓存：前 2 辆全量 40 缩放比，第 3 辆起只搜缓存附近 5 个，选车大幅提速
+- 双层超时（绝对 15s + 确认窗口 3s）、页码记忆修正、识别阈值恢复原版 0.85
+
+**删车逻辑修复**
+- 移除焦点兜底逻辑（会误删非目标车辆），恢复主模板匹配 + 翻页的保守策略
+
+**线程安全与稳定性 / 任务3识别 / 构建（来自 PR #22，贡献者 UnsplashZ）**
+- 暂停/终止后重启闪退修复、新任务排队启动、配置快照、单实例互斥、Focus Hook 超时
+- 任务3改视觉顺序优先 + 连续 2 帧确认；build.bat 优先 .venv；Action 支持 test-v 测试版 tag
 
 ### v1.2.11.2 (2026-07-22)
 

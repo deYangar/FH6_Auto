@@ -358,6 +358,7 @@ class FH_UltimateBot(
             "auto_restart": False,
             "restart_cmd": "start steam://run/2483190",
             "race_timeout": 600,
+            "race_start_wait": 15,
             "stuck_timeout": 60,
             "debug_screenshots": False,
             "focus_hook_enabled": False,

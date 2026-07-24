@@ -459,12 +459,18 @@ class RaceMixin:
             if self.bg_input:
                 self.bg_input.release_all()
 
-            self.log(f"跑图 {self.race_counter + 1}/{target_count}"
-                     f"{' (末轮)' if is_last_lap else ''}: 等待赛事加载(15s)...")
+            # 发车前等待时长（秒），可在 config.json 的 race_start_wait 自定义，默认 15
+            try:
+                race_start_wait = max(0, int(self.config.get("race_start_wait", 15)))
+            except (ValueError, TypeError):
+                race_start_wait = 15
 
-            # 等待15秒（游戏展示车辆 ~5s 后自动发车 + 加载时间）
+            self.log(f"跑图 {self.race_counter + 1}/{target_count}"
+                     f"{' (末轮)' if is_last_lap else ''}: 等待赛事加载({race_start_wait}s)...")
+
+            # 等待 race_start_wait 秒（游戏展示车辆 ~5s 后自动发车 + 加载时间）
             wait_start = time.time()
-            while time.time() - wait_start < 15:
+            while time.time() - wait_start < race_start_wait:
                 if not self.is_running:
                     return False
                 if self.is_paused:
