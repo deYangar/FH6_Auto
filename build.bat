@@ -51,12 +51,7 @@ goto :do_build
 :build_xbox
 echo [INFO] Building Xbox version (FH6Auto_xbox.exe)...
 set EXE_NAME=FH6Auto_xbox
-REM Swap in xbox files
-if exist input_handler.py copy /y input_handler.py input_handler_steam_bak.py >nul
-if exist race_logic.py copy /y race_logic.py race_logic_steam_bak.py >nul
-copy /y input_handler_xbox.py input_handler.py >nul
-copy /y race_logic_xbox.py race_logic.py >nul
-echo [INFO] Xbox files swapped in.
+echo [INFO] Xbox build will default to --platform xbox via runtime hook.
 goto :do_build
 
 :build_all
@@ -74,34 +69,22 @@ echo [INFO] Clean old builds...
 if exist build rmdir /s /q build
 if exist "%EXE_NAME%.spec" del /f /q "%EXE_NAME%.spec"
 
-echo [INFO] Building with PyInstaller...
-"%PYTHON_EXE%" -m PyInstaller -n "%EXE_NAME%" -F -w --uac-admin --noupx "%MAIN_FILE%" --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" --add-data "onnx_models;onnx_models" --hidden-import yaml --hidden-import onnxruntime --noconfirm
+REM Xbox build 通过 runtime hook 自动设置 FH6_PLATFORM=xbox
+set "RUNTIME_HOOK="
+if "%BUILD_TARGET%"=="xbox" set "RUNTIME_HOOK=--runtime-hook runtime_hook_xbox.py"
+
+echo [INFO] Building with PyInstaller (platform=%BUILD_TARGET%)...
+"%PYTHON_EXE%" -m PyInstaller -n "%EXE_NAME%" -F -w --uac-admin --noupx "%MAIN_FILE%" %RUNTIME_HOOK% --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" --add-data "onnx_models;onnx_models" --hidden-import yaml --hidden-import onnxruntime --hidden-import input_handler --hidden-import input_handler_xbox --hidden-import race_logic --hidden-import race_logic_xbox --noconfirm
 
 if errorlevel 1 (
     echo [ERROR] Build failed!
-    if "%BUILD_TARGET%"=="xbox" call :restore_steam
     pause
     exit /b 1
 )
-
-REM Restore steam files if xbox build
-if "%BUILD_TARGET%"=="xbox" call :restore_steam
 
 echo.
 echo [OK] Build complete: dist\%EXE_NAME%.exe
 echo.
 if "%BUILD_TARGET%"=="all" goto :eof
 pause
-goto :eof
-
-:restore_steam
-if exist input_handler_steam_bak.py (
-    copy /y input_handler_steam_bak.py input_handler.py >nul
-    del /f /q input_handler_steam_bak.py
-)
-if exist race_logic_steam_bak.py (
-    copy /y race_logic_steam_bak.py race_logic.py >nul
-    del /f /q race_logic_steam_bak.py
-)
-echo [INFO] Steam files restored.
 goto :eof

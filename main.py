@@ -35,10 +35,39 @@ from config import (
     set_scheme_dir
 )
 from constants import DIK_CODES
-from input_handler import InputMixin
+
+# 输入平台选择:优先级 命令行 --platform > 环境变量 FH6_PLATFORM > 默认 steam
+# build.bat 在打包 xbox 版本时通过 --runtime-hook 注入 FH6_PLATFORM=xbox
+_arg_plat = ""
+for _i, _a in enumerate(sys.argv[1:]):
+    if _a == "--platform" and _i + 2 < len(sys.argv):
+        _candidate = sys.argv[_i + 2].lower()
+        if _candidate in ("steam", "xbox"):
+            _arg_plat = _candidate
+        break
+    if _a.startswith("--platform="):
+        _candidate = _a.split("=", 1)[1].lower()
+        if _candidate in ("steam", "xbox"):
+            _arg_plat = _candidate
+        break
+
+if not _arg_plat:
+    _arg_plat = os.environ.get("FH6_PLATFORM", "").strip().lower()
+    if _arg_plat not in ("steam", "xbox"):
+        _arg_plat = "steam"
+
+BUILD_PLATFORM = _arg_plat
+os.environ["FH6_PLATFORM"] = BUILD_PLATFORM
+
+if BUILD_PLATFORM == "xbox":
+    from input_handler_xbox import InputMixin
+    from race_logic_xbox import RaceMixin
+else:
+    from input_handler import InputMixin
+    from race_logic import RaceMixin
+
 from vision import VisionMixin
 from recovery import RecoveryMixin
-from race_logic import RaceMixin
 from buy_logic import BuyMixin
 from cj_logic import CJMixin
 from sell_logic import SellMixin
@@ -241,10 +270,9 @@ class FH_UltimateBot(
         msg = f"发现新版本 {latest_tag}！\n\n"
         if body:
             msg += body[:500] + "\n\n"
-        msg += "点击确定后将在浏览器打开下载页面。"
+        msg += "是否前往下载？"
         from tkinter import messagebox
-        result = messagebox.showinfo("发现新版本", msg, parent=self)
-        if result == "ok":
+        if messagebox.askyesno("发现新版本", msg, parent=self):
             webbrowser.open(release_url)
 
     def _blink_update_label(self, latest_tag):
