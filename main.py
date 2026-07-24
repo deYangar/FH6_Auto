@@ -241,10 +241,9 @@ class FH_UltimateBot(
         msg = f"发现新版本 {latest_tag}！\n\n"
         if body:
             msg += body[:500] + "\n\n"
-        msg += "点击确定后将在浏览器打开下载页面。"
+        msg += "是否前往下载？"
         from tkinter import messagebox
-        result = messagebox.showinfo("发现新版本", msg, parent=self)
-        if result == "ok":
+        if messagebox.askyesno("发现新版本", msg, parent=self):
             webbrowser.open(release_url)
 
     def _blink_update_label(self, latest_tag):
