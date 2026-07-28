@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FH6 YOLO 标注工作台</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+
+/* 顶部工具栏 */
+.toolbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+.toolbar select, .toolbar button, .toolbar input { background: #0f3460; color: #e0e0e0; border: 1px solid #533483; border-radius: 4px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.toolbar select:hover, .toolbar button:hover { background: #533483; }
+.toolbar button.active { background: #e94560; border-color: #e94560; }
+.toolbar button:disabled { opacity: 0.5; cursor: wait; }
+.toolbar button.model-btn { background: #4ecca3; border-color: #4ecca3; color: #000; font-weight: 600; }
+.toolbar button.model-btn:hover { background: #6fe0ba; }
+.toolbar .sep { width: 1px; height: 24px; background: #533483; }
+.toolbar .info { font-size: 12px; color: #888; }
+.toolbar .saved { color: #4ecca3; font-weight: 600; transition: opacity 0.5s; }
+.toolbar input[type=number] { width: 64px; }
+
+/* 截图采集栏 */
+.capture-bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px; background: #0f3460; border-bottom: 1px solid #533483; flex-shrink: 0; }
+.capture-bar button, .capture-bar input { background: #16213e; color: #e0e0e0; border: 1px solid #533483; border-radius: 4px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
+.capture-bar button:hover { background: #533483; }
+.capture-bar button:disabled { opacity: 0.5; cursor: wait; }
+.capture-bar button.on { background: #e94560; border-color: #e94560; }
+.capture-bar input { width: 190px; cursor: text; }
+.capture-bar .info { font-size: 12px; color: #aaa; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #555; flex-shrink: 0; }
+.dot.on { background: #4ecca3; box-shadow: 0 0 6px #4ecca3; }
+.dot.off { background: #e94560; }
+
+/* 主区域 */
+.main { display: flex; flex: 1; overflow: hidden; }
+
+/* 左侧：图片列表 */
+.sidebar { width: 220px; background: #16213e; border-right: 1px solid #0f3460; display: flex; flex-direction: column; flex-shrink: 0; }
+.sidebar .dir-select { padding: 8px; border-bottom: 1px solid #0f3460; }
+.sidebar .dir-select select { width: 100%; background: #0f3460; color: #e0e0e0; border: 1px solid #533483; border-radius: 4px; padding: 6px; font-size: 13px; }
+.sidebar .img-list { flex: 1; overflow-y: auto; padding: 4px; }
+.sidebar .img-item { padding: 6px 8px; cursor: pointer; border-radius: 4px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
+.sidebar .img-item:hover { background: #0f3460; }
+.sidebar .img-item.active { background: #533483; font-weight: 600; }
+
+/* 中间：画布 */
+.canvas-area { flex: 1; position: relative; overflow: hidden; background: #111; }
+.canvas-area canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
+
+/* 实时预览浮窗 */
+#previewWrap { position: absolute; right: 16px; bottom: 16px; width: 480px; background: #16213e; border: 2px solid #4ecca3; border-radius: 6px; overflow: hidden; display: none; z-index: 50; box-shadow: 0 4px 24px rgba(0,0,0,.6); }
+#previewWrap .pv-head { display: flex; align-items: center; padding: 4px 10px; font-size: 12px; color: #4ecca3; background: #0f3460; }
+#previewWrap .pv-head .pv-close { margin-left: auto; cursor: pointer; color: #e94560; font-weight: 700; }
+#previewImg { display: block; width: 100%; }
+
+/* 右侧：类选择 + 标签列表 */
+.panel { width: 240px; background: #16213e; border-left: 1px solid #0f3460; display: flex; flex-direction: column; flex-shrink: 0; }
+.panel h3 { padding: 10px 12px 6px; font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+.class-list { padding: 4px 8px; }
+.class-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+.class-item:hover { background: #0f3460; }
+.class-item.active { background: #533483; font-weight: 600; }
+.class-item .color-dot { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+.class-item .key-hint { background: #0f3460; border-radius: 3px; padding: 1px 5px; font-size: 10px; color: #888; margin-left: auto; }
+
+/* 已标注列表 */
+.label-list { flex: 1; overflow-y: auto; padding: 4px 8px; border-top: 1px solid #0f3460; }
+.label-item { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+.label-item:hover { background: #0f3460; }
+.label-item.selected { background: #e94560; }
+.label-item .del-btn { color: #e94560; cursor: pointer; font-weight: 700; margin-left: auto; opacity: 0.6; }
+.label-item .del-btn:hover { opacity: 1; }
+
+/* 底部快捷键 */
+.shortcuts { padding: 8px 12px; background: #0f3460; font-size: 11px; color: #666; display: flex; gap: 16px; flex-wrap: wrap; flex-shrink: 0; }
+.shortcuts kbd { background: #1a1a2e; padding: 1px 5px; border-radius: 3px; color: #aaa; font-family: monospace; }
+
+/* 提示气泡 */
+#toast { position: fixed; top: 100px; left: 50%; transform: translateX(-50%); background: #4ecca3; color: #000; padding: 7px 18px; border-radius: 4px; font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 99; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button onclick="prevImage()" title="上一张 (A)">◀ 上一张</button>
+  <button onclick="nextImage()" title="下一张 (D)">下一张 ▶</button>
+  <div class="sep"></div>
+  <button id="btnDraw" class="active" onclick="setMode('draw')" title="画框模式 (V)：拖拽画新框，可以在已有大框内部叠加画小框；拖手柄缩放">✏️ 画框</button>
+  <button id="btnSelect" onclick="setMode('select')" title="选择模式 (Esc)：点选 / 拖拽移动已有框，Alt+拖拽强制画框">🖱 选择</button>
+  <button onclick="deleteSelected()" title="删除选中 (Delete)">🗑 删除</button>
+  <div class="sep"></div>
+  <span class="info" id="imgInfo">-</span>
+  <span class="saved" id="savedHint" style="opacity:0">✓ 已保存</span>
+  <div style="flex:1"></div>
+  <span class="info">置信度</span>
+  <input id="confInput" type="number" min="0.05" max="0.95" step="0.05" value="0.5" title="模型打标置信度阈值">
+  <button id="btnAutoLabel" class="model-btn" onclick="autoLabel()" style="display:none" title="用训练好的模型自动识别当前图片（结果追加到现有标注，可再手动调整）">🤖 模型打标</button>
+  <span class="info" id="cursorPos">-</span>
+</div>
+
+<!-- 截图采集栏 -->
+<div class="capture-bar">
+  <span class="dot" id="gameDot"></span>
+  <span class="info" id="gameStatus">检测游戏窗口...</span>
+  <div style="width:1px;height:20px;background:#533483"></div>
+  <span class="info">截图目录</span>
+  <input id="capTag" list="tagOptions" value="scheme_1_wheelspin" title="截图保存的子目录名（可新建）">
+  <datalist id="tagOptions"></datalist>
+  <button onclick="snapOne()" title="截取当前游戏画面 (C)">📷 截一张</button>
+  <button onclick="snapBurst()" title="连续截 5 张，间隔 0.3 秒">📷 连截5张</button>
+  <button id="btnPreview" onclick="togglePreview()" title="游戏画面实时预览">👁 实时预览</button>
+  <button onclick="deleteCurrentFile()" title="删除当前图片 + 对应标注 txt（送回收站，可还原）">🗑 删除文件</button>
+</div>
+
+<div class="main">
+  <!-- 左侧图片列表 -->
+  <div class="sidebar">
+    <div class="dir-select">
+      <select id="tagSelect" onchange="loadImages()"></select>
+    </div>
+    <div class="img-list" id="imgList"></div>
+  </div>
+
+  <!-- 中间画布 -->
+  <div class="canvas-area" id="canvasArea">
+    <canvas id="canvas"></canvas>
+    <div id="previewWrap">
+      <div class="pv-head">👁 游戏实时预览<span class="pv-close" onclick="togglePreview()">✕ 关闭</span></div>
+      <img id="previewImg" alt="preview">
+    </div>
+  </div>
+
+  <!-- 右侧面板 -->
+  <div class="panel">
+    <h3>类别 <span style="font-size:10px;color:#555">（数字键选择）</span></h3>
+    <div class="class-list" id="classList"></div>
+    <h3>当前图片标注</h3>
+    <div class="label-list" id="labelList"></div>
+  </div>
+</div>
+
+<div class="shortcuts">
+  <span><kbd>C</kbd> 截一张</span>
+  <span><kbd>A</kbd> 上一张</span>
+  <span><kbd>D</kbd> 下一张</span>
+  <span><kbd>V</kbd> 画框模式</span>
+  <span><kbd>Esc</kbd> 选择模式</span>
+  <span><kbd>Delete</kbd> 删除选中</span>
+  <span><kbd>0-9</kbd> 切换类别</span>
+  <span><kbd>Ctrl+S</kbd> 保存</span>
+  <span><kbd>滚轮</kbd> 缩放</span>
+  <span><kbd>右键拖拽</kbd> 平移</span>
+  <span><kbd>选择模式拖框</kbd> 移动</span>
+  <span><kbd>拖手柄</kbd> 缩放框</span>
+  <span><kbd>Alt+拖拽</kbd> 强制画框</span>
+  <span><kbd>方向键</kbd> 微调(Shift×10)</span>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ============================================================
+// 状态
+// ============================================================
+const COLORS = ['#4ecca3','#e94560','#f9ed69','#08d9d6','#ff6e7f','#b83b5e','#6a2c70','#303841','#3dc1d3','#e76f51'];
+let classes = {};        // {id: {name, description, ...}}
+let classOrder = [];     // [id, id, ...]
+let activeClassId = 0;   // 当前选中的类
+let currentDir = '';     // 当前目录名
+let images = [];         // 当前目录的图片列表
+let currentIdx = -1;     // 当前图片索引
+let labels = [];         // 当前图片的标注 [{class_id, cx, cy, w, h}]
+let selectedLabelIdx = -1;
+
+// 画布状态
+let canvas, ctx;
+let imgEl = null;        // 当前加载的图片
+let imgW = 0, imgH = 0; // 图片原始尺寸
+let zoom = 1;
+let panX = 0, panY = 0;
+
+// 交互状态
+let mode = 'draw';       // 'draw' | 'select'
+let drawing = false;
+let drawStart = null;    // {x, y} 图片坐标
+let drawEnd = null;
+let panning = false;
+let panStart = null;
+let panStartOffset = null;
+
+// 编辑状态（移动/缩放已有框）
+// {type:'move', idx, startPt, orig} | {type:'resize', idx, handle, orig}
+let editState = null;
+
+// 预览状态
+let previewOn = false;
+
+const HANDLE_CURSORS = {
+  nw: 'nwse-resize', se: 'nwse-resize',
+  ne: 'nesw-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize',
+  e: 'ew-resize', w: 'ew-resize',
+};
+
+// ============================================================
+// 初始化
+// ============================================================
+window.addEventListener('load', async () => {
+  canvas = document.getElementById('canvas');
+  ctx = canvas.getContext('2d');
+
+  // 加载类别
+  const resp = await fetch('/api/classes');
+  const data = await resp.json();
+  classes = {};
+  classOrder = [];
+  for (const [id, info] of Object.entries(data.classes || {})) {
+    const cid = parseInt(id);
+    classes[cid] = info;
+    classOrder.push(cid);
+  }
+  renderClassList();
+
+  await refreshDirs();
+
+  // 画布事件
+  setupCanvasEvents();
+
+  // 键盘事件
+  document.addEventListener('keydown', onKeyDown);
+
+  // 游戏窗口状态轮询
+  refreshCaptureStatus();
+  setInterval(refreshCaptureStatus, 5000);
+});
+
+// 刷新目录列表（左侧 select + 截图目录 datalist）
+async function refreshDirs() {
+  const dirsResp = await fetch('/api/dirs');
+  const dirs = await dirsResp.json();
+  const tagSelect = document.getElementById('tagSelect');
+  const prev = tagSelect.value;
+  tagSelect.innerHTML = dirs.map(d => `<option value="${d.name}">${d.name} (${d.count})</option>`).join('');
+  if (prev && dirs.some(d => d.name === prev)) tagSelect.value = prev;
+
+  document.getElementById('tagOptions').innerHTML =
+    dirs.map(d => `<option value="${d.name}">`).join('');
+
+  if (dirs.length > 0 && !currentDir) {
+    await loadImages();
+  }
+}
+
+// ============================================================
+// 加载图片列表
+// ============================================================
+async function loadImages() {
+  const tag = document.getElementById('tagSelect').value;
+  if (!tag) return;
+
+  // 先保存旧目录的标注
+  await saveCurrentLabels();
+
+  currentDir = tag;
+
+  const resp = await fetch(`/api/images/${tag}`);
+  images = await resp.json();
+  currentIdx = -1;
+
+  renderImageList();
+  if (images.length > 0) {
+    await selectImage(0, true);
+  }
+}
+
+function renderImageList() {
+  const el = document.getElementById('imgList');
+  el.innerHTML = images.map((name, i) => {
+    const active = i === currentIdx ? ' active' : '';
+    return `<div class="img-item${active}" onclick="selectImage(${i})" title="${name}">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================
+// 选择图片
+// ============================================================
+async function selectImage(idx, skipSave) {
+  if (idx < 0 || idx >= images.length) return;
+
+  if (!skipSave && currentIdx >= 0) {
+    await saveCurrentLabels();
+  }
+
+  currentIdx = idx;
+  const name = images[idx];
+
+  const resp = await fetch(`/api/labels/${currentDir}/${name}`);
+  labels = await resp.json();
+  selectedLabelIdx = -1;
+  editState = null;
+
+  imgEl = new Image();
+  imgEl.onload = () => {
+    imgW = imgEl.naturalWidth;
+    imgH = imgEl.naturalHeight;
+    fitImage();
+    render();
+    document.getElementById('imgInfo').textContent = `${idx + 1}/${images.length} | ${name} | ${imgW}×${imgH}`;
+  };
+  imgEl.src = `/raw/${currentDir}/${name}`;
+
+  renderImageList();
+  renderLabelList();
+  document.getElementById('imgInfo').textContent = `${idx + 1}/${images.length} | ${name}`;
+}
+
+function fitImage() {
+  const area = document.getElementById('canvasArea');
+  const cw = area.clientWidth;
+  const ch = area.clientHeight;
+  zoom = Math.min(cw / imgW, ch / imgH) * 0.95;
+  panX = (cw - imgW * zoom) / 2;
+  panY = (ch - imgH * zoom) / 2;
+}
+
+// ============================================================
+// 渲染
+// ============================================================
+function boxCorners(lb) {
+  const x = (lb.cx - lb.w / 2) * imgW;
+  const y = (lb.cy - lb.h / 2) * imgH;
+  return { x1: x, y1: y, x2: x + lb.w * imgW, y2: y + lb.h * imgH };
+}
+
+function handlePoints(lb) {
+  const { x1, y1, x2, y2 } = boxCorners(lb);
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+  return {
+    nw: [x1, y1], n: [mx, y1], ne: [x2, y1],
+    e: [x2, my], se: [x2, y2], s: [mx, y2],
+    sw: [x1, y2], w: [x1, my],
+  };
+}
+
+function render() {
+  const area = document.getElementById('canvasArea');
+  canvas.width = area.clientWidth;
+  canvas.height = area.clientHeight;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!imgEl) return;
+
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+
+  ctx.drawImage(imgEl, 0, 0, imgW, imgH);
+
+  labels.forEach((lb, i) => {
+    const color = COLORS[lb.class_id % COLORS.length];
+    const { x1, y1, x2, y2 } = boxCorners(lb);
+    const w = x2 - x1, h = y2 - y1;
+    const selected = (i === selectedLabelIdx);
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = selected ? 3 / zoom : 2 / zoom;
+    ctx.setLineDash(selected ? [6 / zoom, 3 / zoom] : []);
+    ctx.strokeRect(x1, y1, w, h);
+    ctx.setLineDash([]);
+
+    const cls = classes[lb.class_id];
+    const label = cls ? cls.name : `class_${lb.class_id}`;
+    const fontSize = Math.max(10, 12 / zoom);
+    ctx.font = `${fontSize}px sans-serif`;
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = color;
+    ctx.fillRect(x1, y1 - fontSize - 4 / zoom, tw + 6 / zoom, fontSize + 4 / zoom);
+    ctx.fillStyle = '#000';
+    ctx.fillText(label, x1 + 3 / zoom, y1 - 3 / zoom);
+
+    // 选中框：画 8 个缩放手柄
+    if (selected) {
+      const hs = 5 / zoom;
+      const pts = handlePoints(lb);
+      for (const name of Object.keys(pts)) {
+        const [hx, hy] = pts[name];
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5 / zoom;
+        ctx.strokeRect(hx - hs, hy - hs, hs * 2, hs * 2);
+      }
+    }
+  });
+
+  // 画正在画的框
+  if (drawing && drawStart && drawEnd) {
+    const color = COLORS[activeClassId % COLORS.length];
+    const x = Math.min(drawStart.x, drawEnd.x);
+    const y = Math.min(drawStart.y, drawEnd.y);
+    const w = Math.abs(drawEnd.x - drawStart.x);
+    const h = Math.abs(drawEnd.y - drawStart.y);
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2 / zoom;
+    ctx.setLineDash([4 / zoom, 4 / zoom]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = color;
+    ctx.font = `${10 / zoom}px sans-serif`;
+    ctx.fillText(`${Math.round(w)}×${Math.round(h)}`, x + 3 / zoom, y + 12 / zoom);
+  }
+
+  ctx.restore();
+}
+
+// ============================================================
+// 坐标与命中检测
+// ============================================================
+function screenToImg(sx, sy) {
+  return {
+    x: (sx - panX) / zoom,
+    y: (sy - panY) / zoom
+  };
+}
+
+function hitTestHandle(pt, idx) {
+  if (idx < 0 || idx >= labels.length) return null;
+  const pts = handlePoints(labels[idx]);
+  const th = 7 / zoom;
+  for (const name of Object.keys(pts)) {
+    const [hx, hy] = pts[name];
+    if (Math.abs(pt.x - hx) <= th && Math.abs(pt.y - hy) <= th) {
+      return { idx, handle: name };
+    }
+  }
+  return null;
+}
+
+function findLabelAt(px, py) {
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const { x1, y1, x2, y2 } = boxCorners(labels[i]);
+    if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function clampLabel(lb) {
+  lb.w = Math.max(lb.w, 5 / imgW);
+  lb.h = Math.max(lb.h, 5 / imgH);
+  lb.cx = Math.min(Math.max(lb.cx, lb.w / 2), 1 - lb.w / 2);
+  lb.cy = Math.min(Math.max(lb.cy, lb.h / 2), 1 - lb.h / 2);
+}
+
+// ============================================================
+// 画布事件
+// ============================================================
+function setupCanvasEvents() {
+  canvas.addEventListener('mousedown', e => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    if (e.button === 2) {
+      panning = true;
+      panStart = { x: e.clientX, y: e.clientY };
+      panStartOffset = { x: panX, y: panY };
+      canvas.style.cursor = 'grabbing';
+      e.preventDefault();
+      return;
+    }
+
+    if (e.button !== 0 || !imgEl) return;
+    const pt = screenToImg(sx, sy);
+
+    // 1) 缩放手柄（两种模式都有效；手柄在框边缘，不干扰画框）
+    let hit = hitTestHandle(pt, selectedLabelIdx);
+    if (!hit) {
+      for (let i = labels.length - 1; i >= 0; i--) {
+        hit = hitTestHandle(pt, i);
+        if (hit) break;
+      }
+    }
+    if (hit) {
+      selectedLabelIdx = hit.idx;
+      editState = { type: 'resize', idx: hit.idx, handle: hit.handle, orig: { ...labels[hit.idx] } };
+      renderLabelList();
+      render();
+      return;
+    }
+
+    // 2) 画框模式：落笔永远画新框——可以在大框内部叠加画小框
+    //    选择模式下按住 Alt 也强制画框
+    if (mode === 'draw' || e.altKey) {
+      if (pt.x < 0 || pt.y < 0 || pt.x > imgW || pt.y > imgH) return;
+      drawing = true;
+      drawStart = pt;
+      drawEnd = pt;
+      if (mode === 'draw') {
+        selectedLabelIdx = -1;
+        renderLabelList();
+      }
+      return;
+    }
+
+    // 3) 选择模式：框内部 → 拖动移动
+    const inside = findLabelAt(pt.x, pt.y);
+    if (inside >= 0) {
+      selectedLabelIdx = inside;
+      editState = { type: 'move', idx: inside, startPt: pt, orig: { ...labels[inside] } };
+      renderLabelList();
+      render();
+      return;
+    }
+
+    // 4) 空白区域：取消选中
+    selectedLabelIdx = -1;
+    renderLabelList();
+    render();
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    if (panning) {
+      panX = panStartOffset.x + (e.clientX - panStart.x);
+      panY = panStartOffset.y + (e.clientY - panStart.y);
+      render();
+      return;
+    }
+
+    const pt = screenToImg(sx, sy);
+
+    if (editState && editState.type === 'move') {
+      const lb = labels[editState.idx];
+      const o = editState.orig;
+      lb.cx = o.cx + (pt.x - editState.startPt.x) / imgW;
+      lb.cy = o.cy + (pt.y - editState.startPt.y) / imgH;
+      clampLabel(lb);
+      render();
+      return;
+    }
+
+    if (editState && editState.type === 'resize') {
+      const lb = labels[editState.idx];
+      const o = editState.orig;
+      let x1 = (o.cx - o.w / 2) * imgW;
+      let y1 = (o.cy - o.h / 2) * imgH;
+      let x2 = x1 + o.w * imgW;
+      let y2 = y1 + o.h * imgH;
+      const px = Math.max(0, Math.min(imgW, pt.x));
+      const py = Math.max(0, Math.min(imgH, pt.y));
+      const h = editState.handle;
+      const MIN = 5;
+      if (h.includes('w')) x1 = Math.min(px, x2 - MIN);
+      if (h.includes('e')) x2 = Math.max(px, x1 + MIN);
+      if (h.includes('n')) y1 = Math.min(py, y2 - MIN);
+      if (h.includes('s')) y2 = Math.max(py, y1 + MIN);
+      lb.cx = ((x1 + x2) / 2) / imgW;
+      lb.cy = ((y1 + y2) / 2) / imgH;
+      lb.w = (x2 - x1) / imgW;
+      lb.h = (y2 - y1) / imgH;
+      render();
+      return;
+    }
+
+    if (drawing) {
+      drawEnd = pt;
+      render();
+    }
+
+    // 悬停光标样式
+    let cursor = mode === 'draw' ? 'crosshair' : 'default';
+    let hh = hitTestHandle(pt, selectedLabelIdx);
+    if (!hh) {
+      for (let i = labels.length - 1; i >= 0; i--) {
+        hh = hitTestHandle(pt, i);
+        if (hh) break;
+      }
+    }
+    if (hh) {
+      cursor = HANDLE_CURSORS[hh.handle];
+    } else if (mode === 'select' && findLabelAt(pt.x, pt.y) >= 0) {
+      cursor = 'move';
+    }
+    canvas.style.cursor = cursor;
+
+    if (pt.x >= 0 && pt.y >= 0 && pt.x <= imgW && pt.y <= imgH) {
+      document.getElementById('cursorPos').textContent = `${Math.round(pt.x)}, ${Math.round(pt.y)}`;
+    }
+  });
+
+  canvas.addEventListener('mouseup', e => {
+    if (panning) {
+      panning = false;
+      canvas.style.cursor = mode === 'draw' ? 'crosshair' : 'default';
+      return;
+    }
+
+    if (editState) {
+      clampLabel(labels[editState.idx]);
+      editState = null;
+      render();
+      autoSave();
+      return;
+    }
+
+    if (drawing && drawStart && drawEnd) {
+      const x = Math.min(drawStart.x, drawEnd.x);
+      const y = Math.min(drawStart.y, drawEnd.y);
+      const w = Math.abs(drawEnd.x - drawStart.x);
+      const h = Math.abs(drawEnd.y - drawStart.y);
+
+      if (w > 5 && h > 5) {
+        labels.push({
+          class_id: activeClassId,
+          cx: (x + w / 2) / imgW,
+          cy: (y + h / 2) / imgH,
+          w: w / imgW,
+          h: h / imgH,
+        });
+        renderLabelList();
+        autoSave();
+      }
+
+      drawing = false;
+      drawStart = null;
+      drawEnd = null;
+      render();
+    }
+  });
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    const factor = e.deltaY < 0 ? 1.15 : 0.87;
+    const newZoom = Math.max(0.1, Math.min(20, zoom * factor));
+
+    panX = sx - (sx - panX) * (newZoom / zoom);
+    panY = sy - (sy - panY) * (newZoom / zoom);
+    zoom = newZoom;
+
+    render();
+  }, { passive: false });
+
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+  window.addEventListener('resize', () => {
+    if (imgEl) {
+      fitImage();
+      render();
+    }
+  });
+}
+
+// ============================================================
+// 键盘
+// ============================================================
+function onKeyDown(e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+  switch (e.key) {
+    case 'a': case 'A': prevImage(); break;
+    case 'd': case 'D': nextImage(); break;
+    case 'v': case 'V': setMode('draw'); break;
+    case 'c': case 'C': snapOne(); break;
+    case 'Escape': setMode('select'); break;
+    case 'Delete': case 'Backspace': deleteSelected(); break;
+    case 's':
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); saveCurrentLabels(); showSaved(); }
+      break;
+    case 'ArrowUp': case 'ArrowDown': case 'ArrowLeft': case 'ArrowRight':
+      if (selectedLabelIdx >= 0) {
+        e.preventDefault();
+        nudgeSelected(e.key, e.shiftKey ? 10 : 1);
+      }
+      break;
+    default:
+      if (e.key >= '0' && e.key <= '9') {
+        const cid = classOrder[parseInt(e.key)];
+        if (cid !== undefined) {
+          activeClassId = cid;
+          renderClassList();
+        }
+      }
+  }
+}
+
+function nudgeSelected(key, px) {
+  const lb = labels[selectedLabelIdx];
+  if (!lb) return;
+  const dx = (key === 'ArrowLeft' ? -px : key === 'ArrowRight' ? px : 0) / imgW;
+  const dy = (key === 'ArrowUp' ? -px : key === 'ArrowDown' ? px : 0) / imgH;
+  lb.cx += dx;
+  lb.cy += dy;
+  clampLabel(lb);
+  render();
+  autoSave();
+}
+
+// ============================================================
+// 类别列表
+// ============================================================
+function renderClassList() {
+  const el = document.getElementById('classList');
+  el.innerHTML = classOrder.map((cid, i) => {
+    const cls = classes[cid];
+    const color = COLORS[cid % COLORS.length];
+    const active = cid === activeClassId ? ' active' : '';
+    return `<div class="class-item${active}" onclick="selectClass(${cid})">
+      <span class="color-dot" style="background:${color}"></span>
+      <span>${cls ? cls.name : 'class_' + cid}</span>
+      <span class="key-hint">${i}</span>
+    </div>`;
+  }).join('');
+}
+
+function selectClass(cid) {
+  activeClassId = cid;
+  renderClassList();
+}
+
+// ============================================================
+// 标签列表
+// ============================================================
+function renderLabelList() {
+  const el = document.getElementById('labelList');
+  if (labels.length === 0) {
+    el.innerHTML = '<div style="padding:8px;color:#555;font-size:12px">无标注</div>';
+    return;
+  }
+  el.innerHTML = labels.map((lb, i) => {
+    const cls = classes[lb.class_id];
+    const name = cls ? cls.name : `class_${lb.class_id}`;
+    const color = COLORS[lb.class_id % COLORS.length];
+    const sel = i === selectedLabelIdx ? ' selected' : '';
+    return `<div class="label-item${sel}" onclick="selectLabel(${i})">
+      <span class="color-dot" style="background:${color};width:10px;height:10px;border-radius:2px;flex-shrink:0"></span>
+      <span>${name}</span>
+      <span class="del-btn" onclick="event.stopPropagation();deleteLabel(${i})">✕</span>
+    </div>`;
+  }).join('');
+}
+
+function selectLabel(idx) {
+  selectedLabelIdx = (selectedLabelIdx === idx) ? -1 : idx;
+  renderLabelList();
+  render();
+}
+
+function deleteLabel(idx) {
+  labels.splice(idx, 1);
+  if (selectedLabelIdx >= labels.length) selectedLabelIdx = -1;
+  renderLabelList();
+  render();
+  autoSave();
+}
+
+function deleteSelected() {
+  if (selectedLabelIdx >= 0 && selectedLabelIdx < labels.length) {
+    deleteLabel(selectedLabelIdx);
+  }
+}
+
+// ============================================================
+// 模式切换
+// ============================================================
+function setMode(m) {
+  mode = m;
+  document.getElementById('btnDraw').classList.toggle('active', m === 'draw');
+  document.getElementById('btnSelect').classList.toggle('active', m === 'select');
+  canvas.style.cursor = m === 'draw' ? 'crosshair' : 'default';
+}
+
+// ============================================================
+// 导航
+// ============================================================
+function prevImage() { selectImage(currentIdx - 1); }
+function nextImage() { selectImage(currentIdx + 1); }
+
+// ============================================================
+// 截图采集
+// ============================================================
+async function refreshCaptureStatus() {
+  try {
+    const st = await (await fetch('/api/capture/status')).json();
+    const dot = document.getElementById('gameDot');
+    const txt = document.getElementById('gameStatus');
+    if (!st.available) {
+      dot.className = 'dot off';
+      txt.textContent = '截图模块不可用（缺 pywin32）';
+      return;
+    }
+    if (st.game_found) {
+      dot.className = 'dot on';
+      const size = st.rect ? `${st.rect[2]}×${st.rect[3]}` : '';
+      txt.textContent = `已找到游戏窗口 ${size}`;
+    } else {
+      dot.className = 'dot off';
+      txt.textContent = '未找到游戏窗口（先启动 FH6）';
+    }
+  } catch (e) { /* 忽略轮询错误 */ }
+}
+
+async function snapOne() {
+  if (snapBusy) return;
+  snapBusy = true;
+  const tag = document.getElementById('capTag').value.trim() || 'unsorted';
+  try {
+    const data = await fetchJsonRetry('/api/capture/snap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag }),
+    });
+    if (!data.ok) { toast(data.error || '截图失败', '#e94560'); return; }
+    toast(`已截取 → ${data.tag}/${data.name}`);
+    await gotoCaptured(data.tag, data.name);
+  } catch (err) {
+    toast('截图请求失败（已重试）: ' + err, '#e94560');
+  } finally {
+    snapBusy = false;
+  }
+}
+
+async function snapBurst() {
+  if (snapBusy) return;
+  snapBusy = true;
+  const tag = document.getElementById('capTag').value.trim() || 'unsorted';
+  try {
+    const data = await fetchJsonRetry('/api/capture/burst', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag, n: 5 }),
+    });
+    if (!data.ok) { toast(data.error || '连拍失败', '#e94560'); return; }
+    toast(`连拍完成：${data.count} 张 → ${data.tag}/`);
+    const lastName = data.names[data.names.length - 1];
+    await gotoCaptured(data.tag, lastName);
+  } catch (err) {
+    toast('连拍请求失败（已重试）: ' + err, '#e94560');
+  } finally {
+    snapBusy = false;
+  }
+}
+
+// 截图防重入 + 网络拖动自动重试一次（治 "TypeError: Failed to fetch" 瞬时连接重置）
+let snapBusy = false;
+async function fetchJsonRetry(url, options, tries = 2) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const resp = await fetch(url, options);
+      return await resp.json();
+    } catch (err) {
+      lastErr = err;
+      if (i < tries - 1) await new Promise(r => setTimeout(r, 400));
+    }
+  }
+  throw lastErr;
+}
+
+// 删除当前图片 + 同名标注（服务端送回收站）
+async function deleteCurrentFile() {
+  if (currentIdx < 0 || !currentDir) { toast('当前没有选中图片', '#f9ed69'); return; }
+  const name = images[currentIdx];
+  if (!confirm(`确定删除 ${currentDir}/${name}？\n图片与对应标注 txt 会一起送进回收站（可还原）。`)) return;
+  try {
+    const resp = await fetch(`/api/delete/${encodeURIComponent(currentDir)}/${encodeURIComponent(name)}`, { method: 'POST' });
+    const data = await resp.json();
+    if (!data.ok) { toast(data.error || '删除失败', '#e94560'); return; }
+    const all = [...(data.recycled || []), ...(data.removed || [])];
+    toast(`已送回收站：${all.join(' + ') || '（无文件）'}`);
+    const resp2 = await fetch(`/api/images/${currentDir}`);
+    images = await resp2.json();
+    if (currentIdx >= images.length) currentIdx = images.length - 1;
+    if (images.length > 0) {
+      await selectImage(currentIdx, true);
+    } else {
+      currentIdx = -1;
+      labels = [];
+      imgEl = null;
+      renderImageList();
+      renderLabelList();
+      render();
+      document.getElementById('imgInfo').textContent = '-';
+    }
+    refreshDirs();
+  } catch (err) {
+    toast('删除请求失败: ' + err, '#e94560');
+  }
+}
+
+// 截完图：刷新目录列表，跳到对应目录并选中新图
+async function gotoCaptured(tag, name) {
+  await refreshDirs();
+  const tagSelect = document.getElementById('tagSelect');
+  if (tagSelect.value !== tag) {
+    tagSelect.value = tag;
+    await loadImages();
+  } else {
+    const resp = await fetch(`/api/images/${tag}`);
+    images = await resp.json();
+    renderImageList();
+  }
+  const idx = images.indexOf(name);
+  if (idx >= 0) await selectImage(idx, true);
+}
+
+function togglePreview() {
+  previewOn = !previewOn;
+  const wrap = document.getElementById('previewWrap');
+  const img = document.getElementById('previewImg');
+  const btn = document.getElementById('btnPreview');
+  if (previewOn) {
+    img.src = '/api/capture/preview';
+    wrap.style.display = 'block';
+    btn.classList.add('on');
+  } else {
+    img.src = '';
+    wrap.style.display = 'none';
+    btn.classList.remove('on');
+  }
+}
+
+// ============================================================
+// 模型自动打标
+// ============================================================
+function boxIou(a, b) {
+  const ax1 = a.cx - a.w / 2, ay1 = a.cy - a.h / 2, ax2 = a.cx + a.w / 2, ay2 = a.cy + a.h / 2;
+  const bx1 = b.cx - b.w / 2, by1 = b.cy - b.h / 2, bx2 = b.cx + b.w / 2, by2 = b.cy + b.h / 2;
+  const iw = Math.max(0, Math.min(ax2, bx2) - Math.max(ax1, bx1));
+  const ih = Math.max(0, Math.min(ay2, by2) - Math.max(ay1, by1));
+  const inter = iw * ih;
+  const union = a.w * a.h + b.w * b.h - inter;
+  return union > 0 ? inter / union : 0;
+}
+async function checkModelStatus() {
+  try {
+    const st = await (await fetch('/api/model_status')).json();
+    if (st.available) {
+      const btn = document.getElementById('btnAutoLabel');
+      btn.style.display = '';
+      btn.title = `用 ${st.name} 自动识别当前图片（结果追加到现有标注，可再手动调整）`;
+    }
+  } catch (e) { /* 旧版服务端无此接口 */ }
+}
+checkModelStatus();
+
+async function autoLabel() {
+  if (currentIdx < 0 || !currentDir) return;
+  const btn = document.getElementById('btnAutoLabel');
+  const conf = parseFloat(document.getElementById('confInput').value) || 0.5;
+
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '⏳ 识别中…';
+  try {
+    const resp = await fetch(`/api/autolabel/${encodeURIComponent(currentDir)}/${encodeURIComponent(images[currentIdx])}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conf }),
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      toast(data.error || '识别失败', '#e94560');
+      return;
+    }
+    let added = 0, skipped = 0;
+    for (const b of data.boxes) {
+      const nb = { class_id: b.class_id, cx: b.cx, cy: b.cy, w: b.w, h: b.h };
+      // 与已有同类框高度重叠 → 跳过（重复点 🤖 不会叠加，幂等）
+      if (labels.some(lb => lb.class_id === nb.class_id && boxIou(lb, nb) > 0.6)) {
+        skipped++;
+        continue;
+      }
+      labels.push(nb);
+      added++;
+    }
+    renderLabelList();
+    render();
+    autoSave();
+    if (data.count > 0) {
+      const dupNote = skipped > 0 ? `，跳过重复 ${skipped} 个` : '';
+      const srvDedup = data.dedup_dropped > 0 ? `，服务端已去除互斥重叠 ${data.dedup_dropped} 个` : '';
+      toast(`识别出 ${data.count} 个框（追加 ${added}${dupNote}${srvDedup}，${data.time_ms}ms）`);
+    } else {
+      toast(`没有识别到目标（置信度阈值 ${conf}，可调低再试）`, '#f9ed69');
+    }
+  } catch (err) {
+    toast('请求失败: ' + err, '#e94560');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+// ============================================================
+// 保存
+// ============================================================
+let saveTimer = null;
+
+function autoSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveCurrentLabels(), 500);
+}
+
+async function saveCurrentLabels() {
+  if (currentIdx < 0 || !currentDir) return;
+  const name = images[currentIdx];
+  if (!name) return;
+
+  await fetch(`/api/labels/${currentDir}/${name}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ labels }),
+  });
+
+  showSaved();
+}
+
+function showSaved() {
+  const el = document.getElementById('savedHint');
+  el.style.opacity = '1';
+  setTimeout(() => { el.style.opacity = '0'; }, 1500);
+}
+
+// ============================================================
+// 提示气泡
+// ============================================================
+let toastTimer = null;
+function toast(msg, bg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = bg || '#4ecca3';
+  el.style.color = bg === '#f9ed69' ? '#000' : (bg ? '#fff' : '#000');
+  el.style.opacity = '1';
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2600);
+}
+</script>
+</body>
+</html>

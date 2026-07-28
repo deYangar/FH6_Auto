@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "classes": {
+    "0": {"name": "new_tag",            "description": "NEW 角标",                    "template": "newcartag.png",     "persistent": true},
+    "1": {"name": "class_s2829",        "description": "S2829 等级标签",              "template": "classS2829.png",    "scheme": 1},
+    "2": {"name": "class_s1702",        "description": "S1702 等级标签",              "template": "classS1702.png",    "scheme": 2},
+    "3": {"name": "revuelto_with_new",  "description": "Revuelto 车卡 + 带 NEW",      "template": "newCC.png",         "scheme": 1, "vehicle": "revuelto"},
+    "4": {"name": "revuelto_no_new",    "description": "Revuelto 车卡 + 不带 NEW",    "template": "removecarobject.png","scheme": 1, "vehicle": "revuelto"},
+    "5": {"name": "madmike_with_new",   "description": "Mad Mike 车卡 + 带 NEW",      "template": "newCC_Mazda.png",   "scheme": 2, "vehicle": "madmike"},
+    "6": {"name": "madmike_no_new",     "description": "Mad Mike 车卡 + 不带 NEW",    "template": "removecarobject.png","scheme": 2, "vehicle": "madmike"}
+  },
+  "next_class_id": 7
+}
