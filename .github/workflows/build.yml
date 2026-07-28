@@ -94,30 +94,27 @@ jobs:
             --add-data "onnx_models;onnx_models" `
             --hidden-import yaml `
             --hidden-import onnxruntime `
+            --hidden-import input_handler `
+            --hidden-import input_handler_xbox `
+            --hidden-import race_logic `
+            --hidden-import race_logic_xbox `
             --noconfirm
 
       - name: Build Xbox version (FH6Auto_xbox.exe)
-        shell: pwsh
         run: |
-          # Backup steam files
-          Copy-Item input_handler.py input_handler_steam_bak.py -Force
-          Copy-Item race_logic.py race_logic_steam_bak.py -Force
-          # Swap in xbox files
-          Copy-Item input_handler_xbox.py input_handler.py -Force
-          Copy-Item race_logic_xbox.py race_logic.py -Force
-          # Build
           python -m PyInstaller -n "FH6Auto_xbox" -F -w --uac-admin --noupx main.py `
+            --runtime-hook runtime_hook_xbox.py `
             --icon=assets/icon.ico `
             --add-data "images;images" `
             --add-data "assets;assets" `
             --add-data "onnx_models;onnx_models" `
             --hidden-import yaml `
             --hidden-import onnxruntime `
+            --hidden-import input_handler `
+            --hidden-import input_handler_xbox `
+            --hidden-import race_logic `
+            --hidden-import race_logic_xbox `
             --noconfirm
-          # Restore steam files
-          Copy-Item input_handler_steam_bak.py input_handler.py -Force
-          Copy-Item race_logic_steam_bak.py race_logic.py -Force
-          Remove-Item input_handler_steam_bak.py, race_logic_steam_bak.py -Force
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
