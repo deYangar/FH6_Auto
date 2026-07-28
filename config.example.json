@@ -142,6 +142,10 @@
     "use_directml": true,
     // 输入分享码前的等待秒数（仅 Xbox 版生效，默认 10）
     "sharecode_timeout": 10,
+    // YOLO 识别（超抽选车）：开启后优先用 YOLO 模型识别全新车卡，关闭或模型缺失时自动降级模板匹配
+    "use_yolo": true,
+    // YOLO 置信度阈值（0.10~0.95，界面滑条可调）
+    "yolo_conf": 0.7,
     // 当前方案名称（自动同步，勿手改）
     "name": "方案1 - 无通行证用Revuelto刷超抽"
 }

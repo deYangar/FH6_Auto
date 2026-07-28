@@ -74,7 +74,7 @@ set "RUNTIME_HOOK="
 if "%BUILD_TARGET%"=="xbox" set "RUNTIME_HOOK=--runtime-hook runtime_hook_xbox.py"
 
 echo [INFO] Building with PyInstaller (platform=%BUILD_TARGET%)...
-"%PYTHON_EXE%" -m PyInstaller -n "%EXE_NAME%" -F -w --uac-admin --noupx "%MAIN_FILE%" %RUNTIME_HOOK% --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" --add-data "onnx_models;onnx_models" --hidden-import yaml --hidden-import onnxruntime --hidden-import input_handler --hidden-import input_handler_xbox --hidden-import race_logic --hidden-import race_logic_xbox --noconfirm
+"%PYTHON_EXE%" -m PyInstaller -n "%EXE_NAME%" -F -w --uac-admin --noupx "%MAIN_FILE%" %RUNTIME_HOOK% --icon=assets/icon.ico --add-data "images;images" --add-data "assets;assets" --add-data "onnx_models;onnx_models" --hidden-import yaml --hidden-import onnxruntime --hidden-import input_handler --hidden-import input_handler_xbox --hidden-import race_logic --hidden-import race_logic_xbox --hidden-import yolo_detector --noconfirm
 
 if errorlevel 1 (
     echo [ERROR] Build failed!
