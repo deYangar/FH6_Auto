@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          lfs: true  # YOLO 模型与标注图走 LFS，不拉实际文件会导致编译缺模型
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -98,6 +100,7 @@ jobs:
             --hidden-import input_handler_xbox `
             --hidden-import race_logic `
             --hidden-import race_logic_xbox `
+            --hidden-import yolo_detector `
             --noconfirm
 
       - name: Build Xbox version (FH6Auto_xbox.exe)
@@ -114,6 +117,7 @@ jobs:
             --hidden-import input_handler_xbox `
             --hidden-import race_logic `
             --hidden-import race_logic_xbox `
+            --hidden-import yolo_detector `
             --noconfirm
 
       - name: Upload artifacts
