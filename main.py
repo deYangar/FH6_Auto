@@ -35,10 +35,39 @@ from config import (
     set_scheme_dir
 )
 from constants import DIK_CODES
-from input_handler import InputMixin
+
+# 输入平台选择:优先级 命令行 --platform > 环境变量 FH6_PLATFORM > 默认 steam
+# build.bat 在打包 xbox 版本时通过 --runtime-hook 注入 FH6_PLATFORM=xbox
+_arg_plat = ""
+for _i, _a in enumerate(sys.argv[1:]):
+    if _a == "--platform" and _i + 2 < len(sys.argv):
+        _candidate = sys.argv[_i + 2].lower()
+        if _candidate in ("steam", "xbox"):
+            _arg_plat = _candidate
+        break
+    if _a.startswith("--platform="):
+        _candidate = _a.split("=", 1)[1].lower()
+        if _candidate in ("steam", "xbox"):
+            _arg_plat = _candidate
+        break
+
+if not _arg_plat:
+    _arg_plat = os.environ.get("FH6_PLATFORM", "").strip().lower()
+    if _arg_plat not in ("steam", "xbox"):
+        _arg_plat = "steam"
+
+BUILD_PLATFORM = _arg_plat
+os.environ["FH6_PLATFORM"] = BUILD_PLATFORM
+
+if BUILD_PLATFORM == "xbox":
+    from input_handler_xbox import InputMixin
+    from race_logic_xbox import RaceMixin
+else:
+    from input_handler import InputMixin
+    from race_logic import RaceMixin
+
 from vision import VisionMixin
 from recovery import RecoveryMixin
-from race_logic import RaceMixin
 from buy_logic import BuyMixin
 from cj_logic import CJMixin
 from sell_logic import SellMixin
@@ -125,6 +154,8 @@ class FH_UltimateBot(
         # 增加模型释放步骤
         def background_init():
             auto_extract_images()
+            # YOLO 模型同模式释放：内置 -> 外部 onnx_models/（不覆盖已有文件，用户自训模型替换后不会被冲掉）
+            auto_extract_images("onnx_models")
 
             self.prepare_template_cache()
         threading.Thread(target=background_init, daemon=True).start()
@@ -241,10 +272,9 @@ class FH_UltimateBot(
         msg = f"发现新版本 {latest_tag}！\n\n"
         if body:
             msg += body[:500] + "\n\n"
-        msg += "点击确定后将在浏览器打开下载页面。"
+        msg += "是否前往下载？"
         from tkinter import messagebox
-        result = messagebox.showinfo("发现新版本", msg, parent=self)
-        if result == "ok":
+        if messagebox.askyesno("发现新版本", msg, parent=self):
             webbrowser.open(release_url)
 
     def _blink_update_label(self, latest_tag):
@@ -358,6 +388,7 @@ class FH_UltimateBot(
             "auto_restart": False,
             "restart_cmd": "start steam://run/2483190",
             "race_timeout": 600,
+            "race_start_wait": 15,
             "stuck_timeout": 60,
             "debug_screenshots": False,
             "focus_hook_enabled": False,
@@ -367,7 +398,9 @@ class FH_UltimateBot(
             "diagnostic_mode": False,
             "sell_count": 30,
             "chk_4": True,
-            "next_4": 1
+            "next_4": 1,
+            "use_yolo": True,
+            "yolo_conf": 0.7
         }
         ext_path = USER_CONFIG_FILE
         # 2. 读取用户的 config.json,并与底本合并(自动补全缺失项)
@@ -487,6 +520,9 @@ class FH_UltimateBot(
         self.config["debug_screenshots"] = self.var_debug_mode.get()
         self.config["focus_hook_enabled"] = self.var_focus_hook.get()
         self.config["use_directml"] = self.var_directml.get()
+        if hasattr(self, "var_use_yolo"):
+            self.config["use_yolo"] = bool(self.var_use_yolo.get())
+            self.config["yolo_conf"] = round(float(self.var_yolo_conf.get()), 2)
         self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
         if hasattr(self, "opt_cj_mode"):
             cj_mode_val = self.opt_cj_mode.get()
@@ -779,6 +815,35 @@ class FH_UltimateBot(
             self.log("调试模式已开启：调试截图 + 诊断模式")
         else:
             self.log("调试模式已关闭")
+
+    def _update_yolo_ui_state(self, save=True):
+        """YOLO 勾选状态联动：未勾选时灰掉置信度滑条，并落盘配置。
+
+        save=False：setup_ui 初始化阶段调用，此时后续控件尚未创建，
+        save_config 会因缺控件崩溃，只刷新 UI 状态不落盘。
+        """
+        enabled = bool(self.var_use_yolo.get())
+        state = "normal" if enabled else "disabled"
+        try:
+            self.slider_yolo_conf.configure(state=state)
+            self.lbl_yolo_conf.configure(text_color="#A0A0A0" if enabled else "#555555")
+        except Exception:
+            pass
+        if not save:
+            return
+        self.save_config()
+        if enabled:
+            self.log(f"YOLO 识别已启用（置信度 {float(self.var_yolo_conf.get()):.2f}）：超抽选车优先走 YOLO，不可用时自动降级模板匹配")
+        else:
+            self.log("YOLO 识别已关闭：超抽选车使用模板匹配")
+
+    def _on_yolo_conf_change(self, value=None):
+        """滑条拖动：刷新数值标签并落盘（节流由 save_config 自身承担）。"""
+        try:
+            self.lbl_yolo_conf.configure(text=f"{float(self.var_yolo_conf.get()):.2f}")
+        except Exception:
+            pass
+        self.save_config()
 
     def on_focus_hook_toggle(self):
         self.save_config()
@@ -1291,18 +1356,63 @@ class FH_UltimateBot(
         self.bottom_frame = ctk.CTkFrame(self, fg_color="transparent", height=260)
         self.bottom_frame.pack(fill="both", expand=True, padx=16, pady=(10, 16))
 
+        # ====== 左列：YOLO 设置（上）+ 等待指令按钮（下），同列竖排 ======
+        left_col = ctk.CTkFrame(self.bottom_frame, fg_color="transparent")
+        left_col.pack(side="left", fill="y", padx=(0, 10))
+
+        # ====== YOLO 识别（超抽选车，替代模板匹配；关闭时自动降级模板） ======
+        yolo_frame = ctk.CTkFrame(left_col, fg_color="transparent")
+        yolo_frame.pack(side="top", anchor="w")
+
+        self.var_use_yolo = ctk.BooleanVar(value=bool(self.config.get("use_yolo", True)))
+        self.chk_use_yolo = ctk.CTkCheckBox(
+            yolo_frame,
+            text="YOLO识别",
+            variable=self.var_use_yolo,
+            font=ctk.CTkFont(size=13),
+            width=92,
+            command=self._update_yolo_ui_state,
+        )
+        self.chk_use_yolo.pack(side="top", anchor="w", pady=(4, 2))
+
+        slider_row = ctk.CTkFrame(yolo_frame, fg_color="transparent")
+        slider_row.pack(side="top", anchor="w")
+
+        self.var_yolo_conf = ctk.DoubleVar(value=float(self.config.get("yolo_conf", 0.7)))
+        self.slider_yolo_conf = ctk.CTkSlider(
+            slider_row,
+            from_=0.10,
+            to=0.95,
+            number_of_steps=17,
+            width=120,
+            height=16,
+            variable=self.var_yolo_conf,
+            command=self._on_yolo_conf_change,
+        )
+        self.slider_yolo_conf.pack(side="left")
+
+        self.lbl_yolo_conf = ctk.CTkLabel(
+            slider_row,
+            text=f"{float(self.config.get('yolo_conf', 0.7)):.2f}",
+            width=34,
+            font=ctk.CTkFont(size=13),
+            text_color="#A0A0A0",
+        )
+        self.lbl_yolo_conf.pack(side="left", padx=(6, 0))
+        self._update_yolo_ui_state(save=False)
+        # ============================================================
+
         self.btn_stop = ctk.CTkButton(
-            self.bottom_frame,
+            left_col,
             text="等待指令 (F8)",
             fg_color="#222B36",
             hover_color="#2F3B4A",
-            width=156,
-            height=60,
+            height=40,
             corner_radius=8,
-            font=ctk.CTkFont(size=16, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
             command=self.stop_all,
         )
-        self.btn_stop.pack(side="left", fill="y", padx=(0, 10))
+        self.btn_stop.pack(side="top", fill="x", pady=(10, 0))
 
         # ====== 日志级别筛选 + 导出 ======
         log_toolbar = ctk.CTkFrame(self.bottom_frame, fg_color="transparent")
@@ -1796,7 +1906,7 @@ class FH_UltimateBot(
                 int(self.config.get("next_3", 4)),
                 int(self.config.get("next_4", 1)),
             ],
-            "cj_mode": int(self.config.get("cj_mode", 1)),
+            "cj_mode": int(self.config.get("cj_mode", 2)),
             "auto_close_game": bool(self.config.get("auto_close_game", False)),
             "auto_shutdown": bool(self.config.get("auto_shutdown", False)),
         }

@@ -772,6 +772,157 @@ class VisionMixin:
             time.sleep(interval)
         return None
 
+    # === YOLO 识别 ===
+
+    def _ensure_yolo(self):
+        """懒加载 YOLO 检测器。首次调用时加载；失败后不再重试（自动降级模板匹配）。"""
+        det = getattr(self, "_yolo_detector", None)
+        if det is None and not getattr(self, "_yolo_load_failed", False):
+            try:
+                from yolo_detector import YoloDetector
+                conf = float(self.config.get("yolo_conf", 0.7))
+                det = YoloDetector(conf_threshold=conf)
+                det.init()
+                self._yolo_detector = det
+                if not det.available:
+                    self._yolo_load_failed = True
+            except Exception as e:
+                self._yolo_load_failed = True
+                self.log(f"[YOLO] 检测器加载失败，降级模板匹配: {e}")
+        return det
+
+    def _find_new_car_yolo(self, screen_bgr, region=None):
+        """YOLO 识别分支：找带 NEW 角标的目标车卡。
+
+        返回 (handled, pos)：
+          handled=True  → YOLO 已接管本帧，pos 为屏幕坐标 (x, y) 或 None（未找到，不再回退模板匹配）
+          handled=False → YOLO 不可用 / 方案不支持 / 推理异常，调用方继续走模板匹配
+
+        坐标系：检测坐标是截图裁剪区本地坐标，必须加 region 偏移转成屏幕坐标
+        （与模板路径的 off_x/off_y 一致），game_click 内部再做屏幕→客户区转换。
+
+        安全规则（2026-07-28）：with_new 分类必须与同区域内的 new_tag 检测框
+        交叉验证，分类器单独说了不算——防止点到非全新车。
+        """
+        det = self._ensure_yolo()
+        if det is None or not det.available:
+            return (False, None)
+        try:
+            from yolo_detector import SCHEME_TARGETS, CLASS_NAMES, box_containment, draw_detections
+        except Exception:
+            return (False, None)
+
+        scheme = int(self.config.get("current_scheme", 0)) + 1
+        if scheme not in SCHEME_TARGETS:
+            return (False, None)
+
+        try:
+            result = det.find_target_car(
+                screen_bgr, scheme,
+                conf=float(self.config.get("yolo_conf", 0.7)),
+            )
+        except Exception as e:
+            self.log(f"[YOLO] 推理异常，本帧降级模板匹配: {e}")
+            return (False, None)
+
+        detections = result.get("detections", [])
+        chosen = result.get("chosen")
+        rejected = result.get("rejected", [])
+
+        # 每帧一行检测摘要（按类别分组 + 最高置信）
+        by_class = {}
+        for d in detections:
+            by_class.setdefault(d["class_id"], []).append(float(d["conf"]))
+        summary = " ".join(
+            f"{CLASS_NAMES.get(cid, cid)}x{len(v)}({max(v):.2f})"
+            for cid, v in sorted(by_class.items())
+        ) or "empty"
+
+        # 未通过 NEW 交叉验证的 with_new 候选 → WARN（误分类的关键证据，2 秒节流防刷屏）
+        if rejected and time.time() - getattr(self, "_yolo_last_reject_log", 0.0) >= 2.0:
+            self._yolo_last_reject_log = time.time()
+            for rej in rejected:
+                self.log(
+                    f"[YOLO] 拒绝候选: {rej['name']} conf={rej['conf']:.3f} "
+                    f"box={rej['box']} 原因={rej['reason']}",
+                    level="WARN",
+                )
+
+        # 调试模式：保存标注截图（1 秒节流，避免刷屏）
+        try:
+            if hasattr(self, "is_debug_screenshots_enabled") and self.is_debug_screenshots_enabled():
+                now = time.time()
+                if now - getattr(self, "_yolo_last_debug_ts", 0.0) >= 1.0:
+                    self._yolo_last_debug_ts = now
+                    anno = draw_detections(screen_bgr, detections, chosen=chosen, rejected=rejected)
+                    debug_dir = os.path.join(APP_DIR, "debug", "yolo")
+                    os.makedirs(debug_dir, exist_ok=True)
+                    status = "chosen" if chosen else ("rejected" if rejected else "empty")
+                    stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(now * 1000) % 1000:03d}"
+                    cv2.imwrite(os.path.join(debug_dir, f"{stamp}_{status}.png"), anno)
+        except Exception as e:
+            self.log(f"[YOLO] 调试截图保存失败: {e}", level="DEBUG")
+
+        if chosen is None:
+            # 空帧连击计数：连续无候选 → 本页确实无目标，wait_for 可提前退出翻页。
+            # 有被拒候选时不计数：页上有“可疑车卡”，保留完整超时语义等 hover/动画稳定。
+            if rejected:
+                self._yolo_empty_streak = 0
+                self._yolo_empty_start = None
+            else:
+                if getattr(self, "_yolo_empty_streak", 0) == 0:
+                    self._yolo_empty_start = time.time()  # 首个空帧时间戳，混合超时用
+                self._yolo_empty_streak = getattr(self, "_yolo_empty_streak", 0) + 1
+            # 节流日志（2 秒一次），带诊断：为什么没选中
+            diag = result.get("diag", {})
+            now = time.time()
+            if now - getattr(self, "_yolo_last_empty_log_ts", 0.0) >= 2.0:
+                self._yolo_last_empty_log_ts = now
+                self.log(
+                    f"[YOLO-DET] {summary} | 无可信目标 "
+                    f"(with_new={diag.get('with_new', 0)} no_new={diag.get('no_new', 0)} "
+                    f"tags={diag.get('tags', 0)} 角标/卡最大重叠={diag.get('best_containment', 0.0):.2f})"
+                )
+            return (True, None)
+
+        # class_score：取同区域内等级标签框的最高 conf；没有就给 0.0。
+        # 0.0 会让 cj_logic._verify_target_point_b600 走原有的模板二次校验——
+        # 安全网不被 YOLO 置信度架空；>=0.72 时说明 YOLO 真实看到了等级标签，直接过硬校验。
+        cls_id = SCHEME_TARGETS[scheme]["class_tag"]
+        cls_conf = 0.0
+        for d in detections:
+            if d["class_id"] != cls_id:
+                continue
+            dbox = (d["x1"], d["y1"], d["x2"], d["y2"])
+            if box_containment(dbox, chosen["box"]) >= 0.5:
+                cls_conf = max(cls_conf, float(d["conf"]))
+
+        self._yolo_empty_streak = 0
+        self._yolo_empty_start = None
+        # 本地坐标 → 屏幕坐标（与模板路径 off_x/off_y 一致），game_click 内部再转客户区
+        off_x = region[0] if region else 0
+        off_y = region[1] if region else 0
+        pos = (int(chosen["x"] + off_x), int(chosen["y"] + off_y))
+        # 写入与模板路径兼容的 meta：
+        # - wait_for_new_consumable_car_strict 的连续帧确认读 pos，强候选回退读这些分数
+        # - cj_logic._verify_target_point_b600 读 class_score
+        self.last_strict_car_meta = {
+            "tag_score": float(chosen["tag_conf"]),
+            "class_score": cls_conf,
+            "car_score": float(chosen["conf"]),
+            "gray_score": float(chosen["conf"]),
+            "source": "yolo",
+            "box": chosen["box"],
+            "rescued": bool(chosen.get("rescued")),
+        }
+        self.last_strict_car_click_points = [pos]
+        self.log(
+            f"[YOLO] 命中目标车卡（NEW 交叉验证通过）: scheme={scheme} "
+            f"car={chosen['conf']:.3f} tag={chosen['tag_conf']:.3f} cls={cls_conf:.3f} "
+            f"pos={pos} rescued={chosen.get('rescued', False)} | {summary}"
+        )
+        return (True, pos)
+
     def find_new_consumable_car_strict(self, region=None):
         """两步法识别目标车卡（多线程并行版）：
         Step 1: 并行全屏跑 newCC.png 找候选车卡
@@ -782,6 +933,16 @@ class VisionMixin:
             return None
         try:
             screen_bgr = self.capture_region(region)
+
+            # === YOLO 识别分支：use_yolo 开启且检测器可用时接管，不再走模板匹配 ===
+            # 检测器不可用/方案不支持/推理异常 → handled=False，落到下方模板匹配逻辑
+            if self.config.get("use_yolo", True) and screen_bgr is not None:
+                handled, yolo_pos = self._find_new_car_yolo(screen_bgr, region)
+                if handled:
+                    return yolo_pos
+            # YOLO 未接管（关闭/降级）：清空空帧计数，模板模式不触发快速翻页
+            self._yolo_empty_streak = 0
+            self._yolo_empty_start = None
 
             # v1.2.11.3: 缩放比缓存——前 2 辆强制全量搜索（不同车最佳 scale 可能不同），
             # 第 3 辆起只搜缓存附近 5 个 scale，耗时从 ~5s 降到 <1s。
@@ -1190,6 +1351,18 @@ class VisionMixin:
             else:
                 confirmed = 0
                 last_pos = None
+                # YOLO 快速翻页（混合条件：帧数 + 时间双达标）：
+                # 快机器（~0.3s/帧）6 帧≈1.8s，被 2.5s 时间下限兜住多扫几帧更稳；
+                # 慢机器（1s+/帧）6 帧≈8s 到了就翻，不用傻等 15s 绝对超时。
+                # 模板降级模式下 _yolo_empty_streak 恒为 0，不受影响。
+                _streak = getattr(self, "_yolo_empty_streak", 0)
+                _empty_start = getattr(self, "_yolo_empty_start", None)
+                if _streak >= 6 and _empty_start is not None and time.time() - _empty_start >= 2.5:
+                    self.log(
+                        f"[StrictCar-Confirm] YOLO 连续 {_streak} 帧 / "
+                        f"{time.time() - _empty_start:.1f}s 无候选，本页无目标，提前退出等待"
+                    )
+                    break
             sleep_end = time.time() + interval
             while self.is_running and time.time() < sleep_end:
                 time.sleep(0.05)
@@ -1855,79 +2028,8 @@ class VisionMixin:
                 time.sleep(0.05)
         return None
 
-    def find_skill_car_from_like_tag(self, region=None):
-        """反向定位法：先全屏找 liketag，再反推车卡位置。"""
-        if not self.is_running:
-            return None
-        try:
-            screen_bgr = self.capture_region(region)
-            scales_to_try = self.get_scales_to_try(fast_mode=False)
-            best_debug = None
-
-            for scale in scales_to_try:
-                car_tpl, _ = self.get_scaled_template("skillcar.png", scale)
-                tag_tpl, _ = self.get_scaled_template("liketag.png", scale)
-                if car_tpl is None or tag_tpl is None:
-                    continue
-
-                h_c, w_c = car_tpl.shape[:2]
-                h_t, w_t = tag_tpl.shape[:2]
-                if h_c < 5 or w_c < 5 or h_t < 3 or w_t < 3:
-                    continue
-                if h_t > screen_bgr.shape[0] or w_t > screen_bgr.shape[1]:
-                    continue
-
-                tag_res = cv2.matchTemplate(screen_bgr, tag_tpl, cv2.TM_CCOEFF_NORMED)
-                ys, xs = np.where(tag_res >= 0.70)
-                tag_points = [(int(y), int(x), float(tag_res[y, x])) for y, x in zip(ys, xs)]
-                tag_points.sort(key=lambda p: (p[0], p[1], -p[2]))
-                checked_tags = set()
-
-                for ty, tx, tag_score in tag_points[:80]:
-                    key = (tx // 8, ty // 8)
-                    if key in checked_tags:
-                        continue
-                    checked_tags.add(key)
-
-                    sx1 = max(0, int(tx - w_c * 1.10))
-                    sy1 = max(0, int(ty - h_c * 1.10))
-                    sx2 = min(screen_bgr.shape[1], int(tx + w_t + w_c * 0.45))
-                    sy2 = min(screen_bgr.shape[0], int(ty + h_t + h_c * 0.45))
-                    search = screen_bgr[sy1:sy2, sx1:sx2]
-                    if search.shape[0] < h_c or search.shape[1] < w_c:
-                        continue
-
-                    car_res = cv2.matchTemplate(search, car_tpl, cv2.TM_CCOEFF_NORMED)
-                    _, car_score, _, car_loc = cv2.minMaxLoc(car_res)
-                    card_x = sx1 + car_loc[0]
-                    card_y = sy1 + car_loc[1]
-
-                    rel_x = tx - card_x
-                    rel_y = ty - card_y
-                    if not (-int(w_c * 0.08) <= rel_x <= int(w_c * 1.08) and -int(h_c * 0.08) <= rel_y <= int(h_c * 1.08)):
-                        best_debug = f"rel invalid tag:{tag_score:.3f} car:{car_score:.3f} rel:{rel_x},{rel_y} scale:{scale:.3f}"
-                        continue
-                    if car_score < 0.70:
-                        best_debug = f"car low tag:{tag_score:.3f} car:{car_score:.3f} scale:{scale:.3f}"
-                        continue
-
-                    click_x = card_x + w_c // 2 + (region[0] if region else 0)
-                    click_y = card_y + h_c // 2 + (region[1] if region else 0)
-                    self.log(
-                        f"[SkillCar] reverse hit: tag={tag_score:.3f} car={car_score:.3f} "
-                        f"rel=({rel_x},{rel_y}) scale={scale:.3f}"
-                    )
-                    return (click_x, click_y)
-
-            if best_debug:
-                self.log(f"[SkillCar] reverse miss: {best_debug}")
-            return None
-        except Exception as e:
-            self.log(f"find_skill_car_from_like_tag exception: {e}")
-            return None
-
     def find_skill_car_with_like_tag(self, region=None, timeout=3.0, interval=0.25):
-        """组合入口：先 multi 匹配，失败降级反向定位。"""
+        """组合入口：全屏 multi 匹配 skillcar + liketag。"""
         profile = get_recognition_profile(
             self,
             "matcher.skillcar_like_combo",
@@ -1945,10 +2047,6 @@ class VisionMixin:
                 like_threshold=profile["like_threshold"],
                 final_threshold=profile["final_threshold"],
             )
-            if pos:
-                return pos
-
-            pos = self.find_skill_car_from_like_tag(region=region)
             if pos:
                 return pos
 

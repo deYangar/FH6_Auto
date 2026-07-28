@@ -70,3 +70,11 @@ onnx_models/**/.cache/
 onnx_models/**/.gitattributes
 onnx_models/**/README.md
 onnx_models/**/inference.json
+
+# YOLO 工具产物（训练机本地产物，不进库）
+yolo_tool/models/
+yolo_tool/data/
+yolo_tool/yolo26s.pt
+
+# 模型回滚备份（本地保留）
+onnx_models/yolo_best_prev_*.onnx
