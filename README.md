@@ -76,6 +76,13 @@
 - Multi-scale + Gray/Edge 兜底
 - 上车后等待菜单稳定,再进入"升级与调校 / 车辆专精"
 
+### YOLO 识别（v1.3.0+）
+- 超抽选车与删车默认走 YOLO 深度学习识别：全新车卡 + NEW 角标双目标检测，速度与准确性相较模板匹配大幅优化
+- NEW 角标交叉验证 + 等级模板二次校验，防止误选非全新车
+- 模型外置：首次启动自动释放到 exe 旁 `onnx_models/yolo_best.onnx`，自训模型直接覆盖即生效，免重编译
+- 界面提供开关与置信度滑条（默认 0.7）；关闭或模型缺失自动降级模板匹配
+- 附带标注训练工具包 `yolo_tool/`：网页截图标注（模型辅助打标）→ 一键续训 → 导出 → 部署，详见 `yolo_tool/README.md`
+
 ### 串联与循环
 跑图 -> 买车 -> 超级抽奖 -> 卖车 -> 下一轮
 
@@ -143,6 +150,8 @@
 | `auto_shutdown` | bool | false | 任务完成后自动关机 |
 | `diagnostic_mode` | bool | false | 诊断模式（输出详细追踪日志） |
 | `use_directml` | bool | true | DirectML 加速 OCR（占少量显存） |
+| `use_yolo` | bool | true | YOLO 识别（超抽选车/删车），关闭或模型缺失自动降级模板匹配 |
+| `yolo_conf` | float | 0.7 | YOLO 置信度阈值（0.10~0.95，界面滑条可调） |
 | `sharecode_timeout` | int | 10 | 输入分享码前等待秒数（仅 Xbox 版） |
 | `class_image` / `race_count` / `buy_count` / `cj_count` / `sell_count` / `skill_dirs` / `share_code` / `cj_mode` / `chk_1~4` / `next_1~4` / `name` | — | — | **自动同步**自 `schemes[当前方案]`，无需手改 |
 
@@ -255,6 +264,17 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 ---
 
 ## 更新日志
+
+### v1.3.0 (2026-07-28)
+
+**🚀 YOLO 深度学习识别（大版本更新）**
+- 超抽选车与删车采用 YOLO 识别，相较图片匹配速度与准确性大幅优化（默认开启，可关）
+- NEW 角标交叉验证 + 等级模板二次校验防误选；列优先选车；空页 ≥6 帧且 ≥2.5s 提前翻页
+- 模型外置：首启释放 `onnx_models/yolo_best.onnx`，自训模型直接覆盖即生效
+- 新增标注训练工具包 `yolo_tool/`（网页截图标注/模型打标/一键训练/导出/部署）
+- 超级抽奖默认模式 2；YOLO 设置与“等待指令”按钮同列竖排
+- Steam/Xbox 平台分离重构（运行时 hook，PR #23，感谢 @hui-shao）+ 更新弹窗修复
+- 修复 YOLO 点击坐标偏移、空页超时、真全新车误拒等问题
 
 ### v1.2.13 (2026-07-24)
 
