@@ -50,7 +50,7 @@ LOG_FILE = os.path.join(APP_DIR, "bot_log.txt")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
 TEMPLATE_CACHE_FILE = os.path.join(CACHE_DIR, "template_cache.pkl")
 TEMPLATE_META_FILE = os.path.join(CACHE_DIR, "template_meta.json")
-CURRENT_VERSION = "1.3.0"
+CURRENT_VERSION = "1.3.1"
 
 def auto_extract_configs():
     # 只从 APP_DIR 下的历史文件名迁移，不再使用 config/ 子目录
@@ -83,7 +83,19 @@ def auto_extract_images(folder_name="images"):
                 src_file = os.path.join(root, file)
                 dst_file = os.path.join(target_root, file)
                 if not os.path.exists(dst_file):
-                    shutil.copy2(src_file, dst_file)
+                    # 原子释放：先拷到 .tmp 再 rename，防止首次启动时业务线程
+                    # 读到写了一半的文件（YOLO 加载半截 onnx 失败后降级模板匹配）
+                    tmp_file = dst_file + ".tmp_extract"
+                    try:
+                        shutil.copy2(src_file, tmp_file)
+                        os.replace(tmp_file, dst_file)
+                    except Exception as e:
+                        try:
+                            if os.path.exists(tmp_file):
+                                os.remove(tmp_file)
+                        except Exception:
+                            pass
+                        print(f"[auto_extract_images] 释放文件失败 {file}: {e}")
     except Exception as e:
         print(f"[auto_extract_images] 释放 images 失败: {e}")
 

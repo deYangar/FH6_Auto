@@ -775,21 +775,48 @@ class VisionMixin:
     # === YOLO 识别 ===
 
     def _ensure_yolo(self):
-        """懒加载 YOLO 检测器。首次调用时加载；失败后不再重试（自动降级模板匹配）。"""
+        """懒加载 YOLO 检测器。
+
+        失败后最多重试 3 次（间隔 ≥5 秒），再永久降级模板匹配。此前单次失败
+        即永久放弃：首次启动时模型释放（后台线程拷贝数十 MB）与 YOLO 加载
+        存在竞态，读到半截模型文件会加载失败，导致整个会话静默走模板匹配。
+        失败原因写 UI 日志（此前只打 stdout，打包后用户完全看不到）。
+        """
         det = getattr(self, "_yolo_detector", None)
-        if det is None and not getattr(self, "_yolo_load_failed", False):
-            try:
-                from yolo_detector import YoloDetector
-                conf = float(self.config.get("yolo_conf", 0.7))
-                det = YoloDetector(conf_threshold=conf)
-                det.init()
+        if det is not None:
+            return det
+        if getattr(self, "_yolo_load_failed", False):
+            return None
+
+        attempts = getattr(self, "_yolo_load_attempts", 0)
+        if attempts >= 3:
+            self._yolo_load_failed = True
+            return None
+        if attempts > 0 and time.time() - getattr(self, "_yolo_load_last_ts", 0.0) < 5.0:
+            return None  # 重试冷却，避免每帧锤加载
+
+        self._yolo_load_attempts = attempts + 1
+        self._yolo_load_last_ts = time.time()
+        try:
+            from yolo_detector import YoloDetector
+            conf = float(self.config.get("yolo_conf", 0.65))
+            det = YoloDetector(conf_threshold=conf)
+            det.init()
+            if det.available:
                 self._yolo_detector = det
-                if not det.available:
-                    self._yolo_load_failed = True
-            except Exception as e:
-                self._yolo_load_failed = True
-                self.log(f"[YOLO] 检测器加载失败，降级模板匹配: {e}")
-        return det
+                backend = "DirectML" if any("Dml" in p for p in getattr(det, "providers", [])) else "CPU"
+                self.log(f"[YOLO] 检测器已加载（后端 {backend}，第 {self._yolo_load_attempts} 次尝试）")
+                return det
+            reason = getattr(det, "last_error", None) or "未知原因"
+        except Exception as e:
+            reason = f"{type(e).__name__}: {e}"
+
+        if self._yolo_load_attempts >= 3:
+            self._yolo_load_failed = True
+            self.log(f"[YOLO] 检测器加载失败（已重试 {self._yolo_load_attempts} 次），降级模板匹配: {reason}", level="WARN")
+        else:
+            self.log(f"[YOLO] 检测器加载失败（第 {self._yolo_load_attempts} 次，5 秒后重试）: {reason}", level="WARN")
+        return None
 
     def _find_new_car_yolo(self, screen_bgr, region=None):
         """YOLO 识别分支：找带 NEW 角标的目标车卡。
@@ -819,7 +846,7 @@ class VisionMixin:
         try:
             result = det.find_target_car(
                 screen_bgr, scheme,
-                conf=float(self.config.get("yolo_conf", 0.7)),
+                conf=float(self.config.get("yolo_conf", 0.65)),
             )
         except Exception as e:
             self.log(f"[YOLO] 推理异常，本帧降级模板匹配: {e}")
@@ -885,16 +912,25 @@ class VisionMixin:
                 )
             return (True, None)
 
-        # class_score：取同区域内等级标签框的最高 conf；没有就给 0.0。
-        # 0.0 会让 cj_logic._verify_target_point_b600 走原有的模板二次校验——
-        # 安全网不被 YOLO 置信度架空；>=0.72 时说明 YOLO 真实看到了等级标签，直接过硬校验。
+        # class_score：取同一车卡上等级标签框的最高 conf；没有就给 0.0。
+        # 0.0 会让 cj_logic._verify_target_point_b600 落到模板二次校验（安全网不被架空）；
+        # 非 0 时由 _verify_target_point_b600 按 YOLO 门槛（0.50）过硬校验。
+        # 区域判定放宽：等级标签贴着车卡边缘、常有一部分露出车卡框外，原 containment>=0.5
+        # 几乎必然不成立（cls 恒为 0）导致每次都降级冗余模板匹配。改为「标签中心落在
+        # 车卡框外扩 30px 内」或「containment>=0.2」。
         cls_id = SCHEME_TARGETS[scheme]["class_tag"]
         cls_conf = 0.0
+        cx1, cy1, cx2, cy2 = chosen["box"]
+        cls_margin = 30
         for d in detections:
             if d["class_id"] != cls_id:
                 continue
             dbox = (d["x1"], d["y1"], d["x2"], d["y2"])
-            if box_containment(dbox, chosen["box"]) >= 0.5:
+            tcx = (d["x1"] + d["x2"]) // 2
+            tcy = (d["y1"] + d["y2"]) // 2
+            center_in = (cx1 - cls_margin <= tcx <= cx2 + cls_margin and
+                         cy1 - cls_margin <= tcy <= cy2 + cls_margin)
+            if center_in or box_containment(dbox, chosen["box"]) >= 0.2:
                 cls_conf = max(cls_conf, float(d["conf"]))
 
         self._yolo_empty_streak = 0

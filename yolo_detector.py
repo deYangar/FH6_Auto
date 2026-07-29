@@ -216,11 +216,15 @@ class YoloDetector:
         self.session = None
         self.input_name = None
         self._available = False
+        self.last_error = None   # init() 失败原因（供调用方写 UI 日志）
+        self.providers = []      # init() 成功后的实际推理后端
 
     def init(self):
-        """加载 ONNX 模型。DirectML 优先，CPU 兜底。"""
+        """加载 ONNX 模型。DirectML 优先，CPU 兜底。失败原因记入 self.last_error。"""
+        self.last_error = None
         if not os.path.isfile(self.model_path):
-            print(f"[YoloDetector] 模型不存在: {self.model_path}")
+            self.last_error = f"模型不存在: {self.model_path}"
+            print(f"[YoloDetector] {self.last_error}")
             self._available = False
             return False
 
@@ -231,11 +235,12 @@ class YoloDetector:
             )
             self.input_name = self.session.get_inputs()[0].name
             self._available = True
-            active = self.session.get_providers()
-            print(f"[YoloDetector] 已加载 {self.model_path}，后端: {active}")
+            self.providers = self.session.get_providers()
+            print(f"[YoloDetector] 已加载 {self.model_path}，后端: {self.providers}")
             return True
         except Exception as e:
-            print(f"[YoloDetector] 加载失败: {e}")
+            self.last_error = f"{type(e).__name__}: {e}"
+            print(f"[YoloDetector] 加载失败: {self.last_error}")
             self._available = False
             return False
 
