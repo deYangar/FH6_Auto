@@ -400,7 +400,7 @@ class FH_UltimateBot(
             "chk_4": True,
             "next_4": 1,
             "use_yolo": True,
-            "yolo_conf": 0.7
+            "yolo_conf": 0.65
         }
         ext_path = USER_CONFIG_FILE
         # 2. 读取用户的 config.json,并与底本合并(自动补全缺失项)
@@ -827,12 +827,17 @@ class FH_UltimateBot(
         try:
             self.slider_yolo_conf.configure(state=state)
             self.lbl_yolo_conf.configure(text_color="#A0A0A0" if enabled else "#555555")
+            self.lbl_yolo_hint.configure(text_color="#8A8A8A" if enabled else "#555555")
         except Exception:
             pass
         if not save:
             return
         self.save_config()
         if enabled:
+            # 重新勾选时重置 YOLO 加载失败状态，让检测器重新尝试加载
+            # （如首次启动时模型还没释放完导致加载失败，勾掉再勾即可自救）
+            self._yolo_load_failed = False
+            self._yolo_load_attempts = 0
             self.log(f"YOLO 识别已启用（置信度 {float(self.var_yolo_conf.get()):.2f}）：超抽选车优先走 YOLO，不可用时自动降级模板匹配")
         else:
             self.log("YOLO 识别已关闭：超抽选车使用模板匹配")
@@ -1068,7 +1073,7 @@ class FH_UltimateBot(
 
         # DirectML 加速选项
         self.var_directml = ctk.BooleanVar(value=self.config.get("use_directml", True))
-        self.chk_directml = ctk.CTkCheckBox(box_race, text="DirectML加速OCR\n会占用少量显存", variable=self.var_directml, width=160, font=ctk.CTkFont(size=13))
+        self.chk_directml = ctk.CTkCheckBox(box_race, text="DirectML加速识别\n会占用少量显存", variable=self.var_directml, width=160, font=ctk.CTkFont(size=13))
         self.chk_directml.pack(pady=(2, 4))
 
         # Xbox 版本专属：分享码输入超时设置
@@ -1341,7 +1346,7 @@ class FH_UltimateBot(
             fg_color="#DA3633",
             hover_color="#B02A37",
             font=ctk.CTkFont(weight="bold"),
-            command=self.stop_all,
+            command=self.manual_stop,
             state="disabled",
         )
         self.btn_runtime_stop.pack(side="right", padx=(0, 12), pady=12)
@@ -1375,10 +1380,20 @@ class FH_UltimateBot(
         )
         self.chk_use_yolo.pack(side="top", anchor="w", pady=(4, 2))
 
+        self.lbl_yolo_hint = ctk.CTkLabel(
+            yolo_frame,
+            text="置信度\n（识别阈值，越高越严格）",
+            font=ctk.CTkFont(size=13),
+            text_color="#8A8A8A",
+            anchor="w",
+            justify="left",
+        )
+        self.lbl_yolo_hint.pack(side="top", anchor="w", padx=(2, 0), pady=(0, 2))
+
         slider_row = ctk.CTkFrame(yolo_frame, fg_color="transparent")
         slider_row.pack(side="top", anchor="w")
 
-        self.var_yolo_conf = ctk.DoubleVar(value=float(self.config.get("yolo_conf", 0.7)))
+        self.var_yolo_conf = ctk.DoubleVar(value=float(self.config.get("yolo_conf", 0.65)))
         self.slider_yolo_conf = ctk.CTkSlider(
             slider_row,
             from_=0.10,
@@ -1393,7 +1408,7 @@ class FH_UltimateBot(
 
         self.lbl_yolo_conf = ctk.CTkLabel(
             slider_row,
-            text=f"{float(self.config.get('yolo_conf', 0.7)):.2f}",
+            text=f"{float(self.config.get('yolo_conf', 0.65)):.2f}",
             width=34,
             font=ctk.CTkFont(size=13),
             text_color="#A0A0A0",
@@ -1410,7 +1425,7 @@ class FH_UltimateBot(
             height=40,
             corner_radius=8,
             font=ctk.CTkFont(size=13, weight="bold"),
-            command=self.stop_all,
+            command=self.manual_stop,
         )
         self.btn_stop.pack(side="top", fill="x", pady=(10, 0))
 
@@ -2099,6 +2114,18 @@ class FH_UltimateBot(
         self.current_thread = threading.Thread(target=runner, name="fh6-pipeline", daemon=True)
         self.current_thread.start()
 
+    def manual_stop(self):
+        """手动停止入口（F8 / 停止按钮）：先清空超抽记忆页码，再 stop_all。
+
+        手动停止后用户通常会增删车辆，记忆页码不再可靠，下次超抽应从第 1 页
+        重新搜索。任务正常完成 / 异常退出的自动停止不清，保留「下次从第 N 页
+        开始搜」的记忆功能。
+        """
+        if getattr(self, "memory_car_page", 0):
+            self.log(f"手动停止：已清空超抽记忆页码（原第 {self.memory_car_page} 页），下次从第 1 页开始搜")
+            self.memory_car_page = 0
+        self.stop_all()
+
     def stop_all(self):
         was_running = self.is_running
         self.is_running = False
@@ -2172,7 +2199,7 @@ class FH_UltimateBot(
         def hotkey_thread():
             def on_press(k):
                 if k == keyboard.Key.f8:
-                    self.stop_all()
+                    self.manual_stop()
                 elif k == keyboard.Key.f9:  # <--- 【新增】F9 快捷键
                     self.toggle_pause()
                 elif k == keyboard.Key.f3:  # <--- 【新增】F3 测试找图

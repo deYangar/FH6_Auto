@@ -2,7 +2,7 @@
 
 基于 **Python + 图像识别 + 后台输入** 的 FH6 视觉自动化工具。
 
-当前版本：**v1.3.0**
+当前版本：**v1.3.1**
 
 **本版本核心改动**: 截图和输入全部后台化,游戏窗口无需在前台即可运行。集成 PP-OCRv6 ONNX 引擎（det + rec）识别比赛结果和按钮文字。
 
@@ -78,9 +78,9 @@
 
 ### YOLO 识别（v1.3.0+）
 - 超抽选车与删车默认走 YOLO 深度学习识别：全新车卡 + NEW 角标双目标检测，速度与准确性相较模板匹配大幅优化
-- NEW 角标交叉验证 + 等级模板二次校验，防止误选非全新车
+- NEW 角标交叉验证 + 等级标签二次校验（YOLO 模式直接用模型自身的等级标签识别过硬校验，模型不可用时降级模板校验），防止误选非全新车
 - 模型外置：首次启动自动释放到 exe 旁 `onnx_models/yolo_best.onnx`，自训模型直接覆盖即生效，免重编译
-- 界面提供开关与置信度滑条（默认 0.7）；关闭或模型缺失自动降级模板匹配
+- 界面提供开关与置信度滑条（默认 0.65）；关闭或模型缺失自动降级模板匹配
 - 附带标注训练工具包 `yolo_tool/`：网页截图标注（模型辅助打标）→ 一键续训 → 导出 → 部署，详见 `yolo_tool/README.md`
 
 ### 串联与循环
@@ -151,7 +151,7 @@
 | `diagnostic_mode` | bool | false | 诊断模式（输出详细追踪日志） |
 | `use_directml` | bool | true | DirectML 加速 OCR（占少量显存） |
 | `use_yolo` | bool | true | YOLO 识别（超抽选车/删车），关闭或模型缺失自动降级模板匹配 |
-| `yolo_conf` | float | 0.7 | YOLO 置信度阈值（0.10~0.95，界面滑条可调） |
+| `yolo_conf` | float | 0.65 | YOLO 置信度阈值（0.10~0.95，界面滑条可调） |
 | `sharecode_timeout` | int | 10 | 输入分享码前等待秒数（仅 Xbox 版） |
 | `class_image` / `race_count` / `buy_count` / `cj_count` / `sell_count` / `skill_dirs` / `share_code` / `cj_mode` / `chk_1~4` / `next_1~4` / `name` | — | — | **自动同步**自 `schemes[当前方案]`，无需手改 |
 
@@ -238,7 +238,7 @@ dist\FH6Auto_xbox.exe   :: Xbox 版,含前台 SendInput 分享码修复
 
 版本号统一读取 `config.py` 中的 `CURRENT_VERSION`，本地无需维护额外的 `version.json`。
 
-> Xbox 版编译时会临时替换 input_handler.py / race_logic.py 为 Xbox 版本,编译完成后自动恢复。
+> Xbox 版通过运行时 hook（`runtime_hook_xbox.py`）切换平台模块，编译期不再做文件 swap 污染。
 
 ---
 

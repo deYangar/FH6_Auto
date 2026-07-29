@@ -7,6 +7,8 @@ FH6_Auto 后台化补丁模块
 - 2026-06-18: 硬编码 scan code + extended flag，修复方向键卡死
 - 2026-06-18: 修正 lParam (repeat count, prev state, trans state)
 - 2026-06-18: _repeat_loop 递增 repeat count，key_up 清除计数
+- 2026-07-29: _repeat_loop 周期性发送新鲜按下包(prev_state=0)，修复游戏失焦清空键状态后
+  长按失效且不恢复的问题；循环内异常防护，单次发送失败不再静默杀死重复线程
 """
 
 import ctypes
@@ -89,13 +91,18 @@ def _build_lparam(scan, extended, repeat, prev_state, trans_state):
 class BackgroundInputManager:
     """后台输入管理器：用 PostMessage 发送键盘/鼠标事件"""
 
-    def __init__(self, hwnd):
+    def __init__(self, hwnd, fresh_interval=2.0):
         self.hwnd = hwnd
         self._pressed_keys = set()
         self._repeat_counts = {}
         self._running = False
         self._thread = None
         self._stop_event = threading.Event()
+        # 新鲜重按周期：每 N 秒发一次 prev_state=0 的全新 KEYDOWN（见 _repeat_loop）
+        self.fresh_interval = max(0.5, float(fresh_interval))
+        # 重复循环发送失败计数（排查用，单次失败不终止线程）
+        self.repeat_errors = 0
+        self.last_repeat_error = None
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -209,10 +216,38 @@ class BackgroundInputManager:
             sender(self.hwnd, win32con.WM_KEYUP, vk, lParam)
 
     def _repeat_loop(self):
-        """每 50ms 给所有按住的键重发 KEYDOWN"""
+        """每 50ms 给所有按住的键重发 KEYDOWN。
+
+        每 fresh_interval 秒改发一次"新鲜按下"包（prev_state=0, bit30=0）：
+        游戏窗口失焦再回焦后，游戏侧可能清空键盘状态并过滤 auto-repeat 包
+        （lParam bit30=1 被当作自动重复忽略），导致长按永久失效、车停住不动，
+        只能等完赛/卡死恢复重新按下才恢复。新鲜按下等价于重新按了一次，
+        让游戏在 2 秒内自愈。目前长期按住的键只有跑图的 w/up（油门/方向），
+        无边缘触发语义，重按安全。
+
+        单次发送异常只计数不杀线程：此前 PostMessage 抛一次异常（如窗口句柄
+        瞬时失效）就会静默杀死整个重复线程，之后连 KEYUP 都发不出去。
+        """
+        last_fresh = time.time()
         while self._running and not self._stop_event.is_set():
-            for key in list(self._pressed_keys):
-                self._send_key(key, down=True, is_repeat=True)
+            try:
+                use_fresh = (time.time() - last_fresh) >= self.fresh_interval
+                for key in list(self._pressed_keys):
+                    try:
+                        if use_fresh:
+                            # 新鲜按下：prev_state=0, repeat=1，等价手动重新按下
+                            self._repeat_counts.pop(key, None)
+                            self._send_key(key, down=True, is_repeat=False)
+                        else:
+                            self._send_key(key, down=True, is_repeat=True)
+                    except Exception as e:
+                        self.repeat_errors += 1
+                        self.last_repeat_error = f"{type(e).__name__}: {e}"
+                if use_fresh:
+                    last_fresh = time.time()
+            except Exception:
+                # 兜底：循环本身任何意外异常都不允许杀死线程
+                pass
             self._stop_event.wait(0.05)
 
 
