@@ -171,31 +171,44 @@ class SellMixin:
             self.game_click(pos_target)
             time.sleep(0.8)
 
-            # 点击车卡后移除按钮只是半露出（灰度分过不了线），必须先 Enter
-            # 呼出完整菜单再找，否则白等一轮超时再 Enter，每辆车浪费 2 秒+
-            self.hw_press("enter")
-            time.sleep(0.7)
-
+            # 筛选后系统默认已选中第一辆车，点击车卡会直接打开菜单，
+            # 此时无条件补 Enter 会选中菜单第一项导致直接上车（issue #26），
+            # 因此恢复两段式：先找按钮直接点，找不到才 Enter 呼出完整菜单
             self.log("寻找 '从车库移除' 按钮...")
             pos_remove = self.wait_for_image_gray(
                 "removecar.png",
                 region=self.regions["中间"],
-                threshold=0.75,
+                threshold=0.70,
                 timeout=1.5,
                 interval=0.3,
                 fast_mode=True
             )
 
             if pos_remove:
-                self.log("找到移除按钮，点击...")
+                self.log("直接找到移除按钮，点击...")
                 self.game_click(pos_remove)
             else:
-                self.log("未找到移除按钮，可能点错了/该车无法移除，按 ESC 放弃该车...")
-                self.hw_press("esc")
-                time.sleep(1.0)
-                self.hw_press("right")
-                time.sleep(1.2)
-                continue
+                self.log("未直接找到移除按钮，按下 Enter 呼出菜单...")
+                self.hw_press("enter")
+                time.sleep(0.8)
+                pos_remove = self.wait_for_image_gray(
+                    "removecar.png",
+                    region=self.regions["中间"],
+                    threshold=0.75,
+                    timeout=1.5,
+                    interval=0.3,
+                    fast_mode=True
+                )
+                if pos_remove:
+                    self.log("呼出菜单后找到移除按钮，点击...")
+                    self.game_click(pos_remove)
+                else:
+                    self.log("仍未找到移除按钮，可能点错了/该车无法移除，按 ESC 放弃该车...")
+                    self.hw_press("esc")
+                    time.sleep(1.0)
+                    self.hw_press("right")
+                    time.sleep(1.2)
+                    continue
 
             time.sleep(0.8)
             self.log("确认移除...")
