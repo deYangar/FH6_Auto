@@ -1339,6 +1339,9 @@ class VisionMixin:
         - 绝对超时 absolute_timeout：无论是否找到目标，总时间上限，
           防止“永远找不到目标”时无限循环（如超抽次数>买车数）。
         """
+        # 空帧连击只描述当前页面，不能沿用上一页或上一次任务的计数。
+        self._yolo_empty_streak = 0
+        self._yolo_empty_start = None
         profile = get_recognition_profile(self, "cj.strict_new_car")
         required = max(1, int(profile.get("confirm_frames", 2)))
         max_distance = max(10, int(profile.get("confirm_distance", 70)))

@@ -22,6 +22,11 @@ import win32api
 
 PW_RENDERFULLCONTENT = 3
 
+# 用户按 Alt/Win 时 Windows 会切换激活窗口，游戏也可能同步清空自己的
+# 菜单键盘状态。此时继续投递方向键/Enter，容易把技能树的两步操作拆开。
+# GetAsyncKeyState 的高位表示当前按下，低位用于捕捉刚刚按过但已经释放的情况。
+INTERFERING_MODIFIER_VKS = (0x12, 0xA4, 0xA5, 0x5B, 0x5C)  # Alt/LAlt/RAlt/LWin/RWin
+
 # VK 码映射
 VK_MAP = {
     "esc": 0x1B, "enter": 0x0D, "space": 0x20, "backspace": 0x08, "tab": 0x09,
@@ -88,13 +93,34 @@ def _build_lparam(scan, extended, repeat, prev_state, trans_state):
     return lp
 
 
+def _read_interfering_modifier_state():
+    """返回 (当前按住, 刚刚按过)；查询失败时不阻塞自动化。"""
+    held = False
+    recent = False
+    try:
+        for vk in INTERFERING_MODIFIER_VKS:
+            state = int(ctypes.windll.user32.GetAsyncKeyState(vk)) & 0xFFFF
+            held = held or bool(state & 0x8000)
+            recent = recent or bool(state & 0x0001)
+    except Exception:
+        return False, False
+    return held, recent
+
+
 class BackgroundInputManager:
     """后台输入管理器：用 PostMessage 发送键盘/鼠标事件"""
 
-    def __init__(self, hwnd, fresh_interval=2.0):
+    def __init__(
+        self,
+        hwnd,
+        fresh_interval=2.0,
+        modifier_settle=0.15,
+        modifier_poll_interval=0.02,
+    ):
         self.hwnd = hwnd
         self._pressed_keys = set()
         self._repeat_counts = {}
+        self._input_lock = threading.RLock()
         self._running = False
         self._thread = None
         self._stop_event = threading.Event()
@@ -103,6 +129,10 @@ class BackgroundInputManager:
         # 重复循环发送失败计数（排查用，单次失败不终止线程）
         self.repeat_errors = 0
         self.last_repeat_error = None
+        # Alt/Win 切窗期间暂停一次性按键，释放后再留一点时间让游戏完成失焦处理。
+        self.modifier_settle = max(0.0, float(modifier_settle))
+        self.modifier_poll_interval = max(0.001, float(modifier_poll_interval))
+        self.modifier_waits = 0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -125,23 +155,29 @@ class BackgroundInputManager:
 
     def key_down(self, key):
         """按住按键（加入重复循环）"""
-        self._pressed_keys.add(key.lower())
-        self._send_key(key, down=True, is_repeat=False)
+        with self._input_lock:
+            self._pressed_keys.add(key.lower())
+            self._send_key(key, down=True, is_repeat=False)
 
     def key_up(self, key):
         """释放按键"""
-        self._pressed_keys.discard(key.lower())
-        self._repeat_counts.pop(key.lower(), None)
-        self._send_key(key, down=False)
+        with self._input_lock:
+            self._pressed_keys.discard(key.lower())
+            self._repeat_counts.pop(key.lower(), None)
+            self._send_key(key, down=False)
 
     def press(self, key, delay=0.08, use_send=False):
         """单击按键（KEYDOWN + 可选 WM_CHAR + KEYUP）
         use_send=True 时用 SendMessage 同步发送，等价于 click(use_send=True) 的强点模式。
         """
-        self._send_key(key, down=True, is_repeat=False, send_char=True, use_send=use_send)
-        time.sleep(delay)
-        self._send_key(key, down=False, use_send=use_send)
-        time.sleep(0.02)
+        with self._input_lock:
+            if not self._wait_for_interfering_modifiers():
+                return False
+            self._send_key(key, down=True, is_repeat=False, send_char=True, use_send=use_send)
+            time.sleep(delay)
+            self._send_key(key, down=False, use_send=use_send)
+            time.sleep(0.02)
+        return True
 
     def click(self, x, y, double=False, use_send=False, clicks=None, hold=0.08, gap=0.08):
         """在窗口客户区坐标 (x, y) 点击
@@ -173,10 +209,11 @@ class BackgroundInputManager:
 
     def release_all(self):
         """强制释放所有按住的键，清空状态"""
-        for key in list(self._pressed_keys):
-            self.key_up(key)
-        self._pressed_keys.clear()
-        self._repeat_counts.clear()
+        with self._input_lock:
+            for key in list(self._pressed_keys):
+                self.key_up(key)
+            self._pressed_keys.clear()
+            self._repeat_counts.clear()
 
     def click_with_confirm(self, x, y, confirm_key="enter", double=False):
         """点击 + 发送确认键（用于游戏内需要 Enter/Space 确认的按钮）"""
@@ -187,6 +224,27 @@ class BackgroundInputManager:
         time.sleep(0.2)
         self.press(confirm_key, delay=0.15)
         time.sleep(0.2)
+
+    def _wait_for_interfering_modifiers(self):
+        """等用户释放 Alt/Win 后再发送一次性游戏按键。"""
+        observed = False
+        while not self._stop_event.is_set():
+            held, recent = _read_interfering_modifier_state()
+            if held:
+                if not observed:
+                    self.modifier_waits += 1
+                observed = True
+                if self._stop_event.wait(self.modifier_poll_interval):
+                    return False
+                continue
+            observed = observed or recent
+            break
+
+        if self._stop_event.is_set():
+            return False
+        if observed and self.modifier_settle > 0:
+            return not self._stop_event.wait(self.modifier_settle)
+        return True
 
     def _send_key(self, key, down=True, is_repeat=False, send_char=False, use_send=False):
         key = key.lower()
@@ -234,12 +292,13 @@ class BackgroundInputManager:
                 use_fresh = (time.time() - last_fresh) >= self.fresh_interval
                 for key in list(self._pressed_keys):
                     try:
-                        if use_fresh:
-                            # 新鲜按下：prev_state=0, repeat=1，等价手动重新按下
-                            self._repeat_counts.pop(key, None)
-                            self._send_key(key, down=True, is_repeat=False)
-                        else:
-                            self._send_key(key, down=True, is_repeat=True)
+                        with self._input_lock:
+                            if use_fresh:
+                                # 新鲜按下：prev_state=0, repeat=1，等价手动重新按下
+                                self._repeat_counts.pop(key, None)
+                                self._send_key(key, down=True, is_repeat=False)
+                            else:
+                                self._send_key(key, down=True, is_repeat=True)
                     except Exception as e:
                         self.repeat_errors += 1
                         self.last_repeat_error = f"{type(e).__name__}: {e}"

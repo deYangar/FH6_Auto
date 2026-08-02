@@ -9,6 +9,508 @@ from config import APP_DIR
 class CJMixin:
     """超级抽奖业务逻辑"""
 
+    # 两套内置方案的技能路径最终都落在技能树右上节点。使用归一化坐标，
+    # 只看节点本身，不受车辆、动态虚化背景和具体 16:9 分辨率影响。
+    _MASTERY_FINAL_NODE_ROI = (0.285, 0.170, 0.350, 0.275)
+    _MASTERY_COMPLETE_MIN_PINK_RATIO = 0.15
+    _MASTERY_POPUP_HEADER_ROI = (0.315, 0.425, 0.685, 0.510)
+    _MASTERY_POPUP_MIN_LIME_RATIO = 0.25
+    _MASTERY_HOME_DOWN_PRESSES = 6
+    _MASTERY_HOME_LEFT_PRESSES = 6
+    _MASTERY_LOCAL_RETRIES = 2
+    _MASTERY_LOCKED_HINTS = (
+        "无法使用额外加成", "未解锁", "尚未解锁", "先解锁", "需要先解锁", "必须先解锁", "相邻的加成",
+        "cannotuseperk", "perkunavailable", "notunlocked", "unlockfirst", "mustunlock", "unlockanadjacent",
+    )
+
+    @classmethod
+    def _mastery_final_node_pink_ratio(cls, image):
+        """计算最终节点 ROI 内 FH6 已购买粉色的像素占比。"""
+        if image is None or getattr(image, "size", 0) == 0:
+            return 0.0
+        h, w = image.shape[:2]
+        x1r, y1r, x2r, y2r = cls._MASTERY_FINAL_NODE_ROI
+        x1, x2 = int(w * x1r), int(w * x2r)
+        y1, y2 = int(h * y1r), int(h * y2r)
+        roi = image[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+        if roi.size == 0:
+            return 0.0
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        pink = cv2.inRange(hsv, np.array((145, 120, 120)), np.array((179, 255, 255)))
+        return float(cv2.countNonZero(pink)) / float(pink.shape[0] * pink.shape[1])
+
+    def _mastery_completion_state(self, image=None):
+        """返回 (最终超级抽奖节点是否已购买, 粉色像素占比)。"""
+        if image is None:
+            image = self.capture_region(self.regions["全界面"])
+        ratio = self._mastery_final_node_pink_ratio(image)
+        return ratio >= self._MASTERY_COMPLETE_MIN_PINK_RATIO, ratio
+
+    @classmethod
+    def _mastery_popup_lime_ratio(cls, image):
+        """计算中心弹窗标题区域内 FH6 荧光绿的像素占比。"""
+        if image is None or getattr(image, "size", 0) == 0:
+            return 0.0
+        h, w = image.shape[:2]
+        x1r, y1r, x2r, y2r = cls._MASTERY_POPUP_HEADER_ROI
+        roi = image[
+            int(h * y1r):int(h * y2r),
+            int(w * x1r):int(w * x2r),
+        ]
+        if roi.size == 0:
+            return 0.0
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        lime = cv2.inRange(hsv, np.array((30, 180, 200)), np.array((50, 255, 255)))
+        return float(cv2.countNonZero(lime)) / float(lime.shape[0] * lime.shape[1])
+
+    def _wait_for_mastery_complete(self, timeout=2.0, interval=0.25):
+        deadline = time.time() + timeout
+        best_ratio = 0.0
+        while getattr(self, "is_running", True) and time.time() < deadline:
+            complete, ratio = self._mastery_completion_state()
+            best_ratio = max(best_ratio, ratio)
+            if complete:
+                return True, ratio
+            time.sleep(interval)
+        return False, best_ratio
+
+    def _detect_mastery_popup_state(self):
+        """返回 (locked/points/unknown/None, OCR 文本, 荧光绿占比)。"""
+        try:
+            image = self.capture_region(self.regions["全界面"])
+            if image is None:
+                return None, "", 0.0
+            lime_ratio = self._mastery_popup_lime_ratio(image)
+            if lime_ratio < self._MASTERY_POPUP_MIN_LIME_RATIO:
+                return None, "", lime_ratio
+
+            engine = self.get_ocr_engine()
+            text = ""
+            if engine is not None:
+                text = engine.detect_text_in_region(image, {
+                    "y_start": 0.40,
+                    "y_end": 0.60,
+                    "x_start": 0.30,
+                    "x_end": 0.70,
+                })
+            normalized = "".join(str(text).lower().split())
+            if any(hint in normalized for hint in ("不够", "不足", "notenough")):
+                return "points", str(text), lime_ratio
+            if any(hint in normalized for hint in self._MASTERY_LOCKED_HINTS):
+                return "locked", str(text), lime_ratio
+            return "unknown", str(text), lime_ratio
+        except Exception as e:
+            self.log(f"技能树弹窗检查异常: {e}", level="WARN")
+            return None, "", 0.0
+
+    def _detect_mastery_locked_popup(self):
+        """兼容接口：返回未解锁/未知中心弹窗的诊断文本。"""
+        status, text, lime_ratio = self._detect_mastery_popup_state()
+        if status in ("locked", "unknown"):
+            return text or f"中心技能弹窗颜色命中(lime_ratio={lime_ratio:.3f})"
+        return ""
+
+    def _handle_mastery_popup(self, step):
+        """处理一次购买后的弹窗，返回 stop/retry/failed；无弹窗返回 None。"""
+        status, text, lime_ratio = self._detect_mastery_popup_state()
+        if status is None:
+            return None
+        if status == "points":
+            self._finish_mastery_points_exhausted()
+            return "stop"
+        if status == "unknown" and self.find_image_gray(
+            "SPNE.png", region=self.regions["全界面"], threshold=0.70
+        ):
+            self._finish_mastery_points_exhausted()
+            return "stop"
+        diagnostic = text or f"中心技能弹窗颜色命中(lime_ratio={lime_ratio:.3f})"
+        if self._dismiss_locked_mastery_popup(step, diagnostic):
+            return "retry"
+        return "failed"
+
+    def _wait_for_mastery_popup_closed(self, timeout=2.5, interval=0.15):
+        deadline = time.time() + timeout
+        while getattr(self, "is_running", True) and time.time() < deadline:
+            image = self.capture_region(self.regions["全界面"])
+            if image is None:
+                time.sleep(interval)
+                continue
+            if self._mastery_popup_lime_ratio(image) < self._MASTERY_POPUP_MIN_LIME_RATIO:
+                return True
+            time.sleep(interval)
+        return False
+
+    def _dismiss_locked_mastery_popup(self, step, text):
+        """用 Enter 关闭未解锁弹窗，随后由调用方归位并从头重放技能路径。"""
+        self.log(f"检测到技能前置未解锁，关闭弹窗后归位重试: step={step}, OCR={text}", level="WARN")
+        self._save_upgrade_debug(
+            "mastery_locked_popup",
+            note="技能点按键序列未完整生效，OCR 检测到前置技能未解锁弹窗",
+            extra={"step": step, "ocr_text": text},
+        )
+        self.hw_press("enter", delay=0.12, use_send=True)
+        if self._wait_for_mastery_popup_closed():
+            return True
+        self.log("未解锁弹窗按 Enter 后仍未关闭，交给全局恢复。", level="WARN")
+        return False
+
+    def _home_mastery_cursor(self):
+        """利用技能树边界把任意焦点确定性归位到左下角初始节点。"""
+        self.log(
+            f"技能树焦点归位: Down×{self._MASTERY_HOME_DOWN_PRESSES} "
+            f"Left×{self._MASTERY_HOME_LEFT_PRESSES}"
+        )
+        for key, count in (
+            ("down", self._MASTERY_HOME_DOWN_PRESSES),
+            ("left", self._MASTERY_HOME_LEFT_PRESSES),
+        ):
+            for _ in range(count):
+                if not self.is_running:
+                    return False
+                self.hw_press(key, delay=0.10, use_send=True)
+                time.sleep(0.12)
+        return True
+
+    def _begin_cj_mastery(self):
+        """标记当前已装备车辆尚未完成加点，供全局恢复后直接重试当前车。"""
+        self._cj_mastery_in_progress = True
+        self._cj_mastery_attempted = False
+
+    def _clear_cj_mastery_state(self, reason):
+        was_in_progress = bool(getattr(self, "_cj_mastery_in_progress", False))
+        self._cj_mastery_in_progress = False
+        self._cj_mastery_attempted = False
+        if was_in_progress:
+            self.log(f"当前车辆加点流程已完成/结束: {reason}")
+
+    def _finish_mastery_points_exhausted(self):
+        self.log("已无技能点，提前结束抽奖!")
+        self._clear_cj_mastery_state("技能点不足")
+        time.sleep(1.0)
+        self.hw_press("enter", delay=0.12, use_send=True)
+        time.sleep(0.8)
+        for _ in range(3):
+            self.hw_press("esc")
+            time.sleep(1.0)
+        return True
+
+    def _wait_for_cj_vehicle_menu(self, timeout=6.0, hard_timeout=None, min_brightness=5.0):
+        """通过设计与喷涂或升级与调校入口确认车辆主菜单。"""
+        start = time.time()
+        interaction_deadline = start + timeout
+        hard_timeout = timeout if hard_timeout is None else max(timeout, hard_timeout)
+        hard_deadline = start + hard_timeout
+        last_brightness = None
+        dark_logged = False
+
+        while self.is_running and time.time() < interaction_deadline and time.time() < hard_deadline:
+            now = time.time()
+            image = self.capture_region(self.regions["全界面"])
+            if image is None:
+                interaction_deadline = min(hard_deadline, now + timeout)
+                if not dark_logged:
+                    self.log("车辆菜单加载期间后台截图暂不可用，暂停计算有效等待时间。", level="WARN")
+                    dark_logged = True
+            else:
+                last_brightness = float(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).mean())
+                if last_brightness < min_brightness:
+                    interaction_deadline = min(hard_deadline, now + timeout)
+                    if not dark_logged:
+                        self.log(
+                            f"车辆菜单仍在黑屏/过场中，暂停计算有效等待时间: "
+                            f"brightness={last_brightness:.1f}"
+                        )
+                        dark_logged = True
+                else:
+                    pos = self.find_any_image_gray(
+                        ["DandP.png", "UandT-w.png", "UandT-b.png"],
+                        region=self.regions["全界面"],
+                        threshold=0.68,
+                        fast_mode=False,
+                    )
+                    if pos:
+                        if dark_logged:
+                            self.log(
+                                f"车辆菜单画面已恢复并确认: pos={pos} "
+                                f"brightness={last_brightness:.1f}"
+                            )
+                        return pos
+
+            time.sleep(0.25)
+
+        self.log(
+            f"等待车辆菜单确认超时: brightness={last_brightness} "
+            f"elapsed={time.time() - start:.1f}s",
+            level="WARN",
+        )
+        return None
+
+    def _enter_cj_vehicle_menu(self):
+        """沿正常任务路径从暂停菜单进入车辆主菜单，不选择或更换车辆。"""
+        self.log("准备验证/进入菜单...")
+        if not self.enter_menu():
+            return False
+
+        self.log("进入车辆与收藏...")
+        self.hw_press("pagedown", delay=0.15)
+        time.sleep(1.0)
+
+        pos_buycar = self.wait_for_buy_and_used_car(timeout=15)
+        if not pos_buycar:
+            self.log("未识别到 购买新车与二手车")
+            return False
+
+        self.game_click(pos_buycar)
+        time.sleep(0.8)
+        self.hw_press("enter")
+        time.sleep(5.0)
+
+        pos_bs = self.wait_for_any_image_gray(
+            ["buyandsell-w.png", "buyandsell-b.png"],
+            region=self.regions["左"],
+            threshold=0.75,
+            timeout=60,
+            interval=0.5,
+            fast_mode=True,
+        )
+        if not pos_bs:
+            self.log("未找到购买与出售")
+            return False
+
+        self.game_click(pos_bs)
+        time.sleep(1.0)
+        self.hw_press("pagedown", delay=0.15)
+        self.log("进入车辆界面...")
+        if self._wait_for_cj_vehicle_menu(timeout=20.0, hard_timeout=60.0):
+            return True
+
+        still_pos_bs = self.find_any_image_gray(
+            ["buyandsell-w.png", "buyandsell-b.png"],
+            region=self.regions["左"],
+            threshold=0.75,
+            fast_mode=True,
+        )
+        if still_pos_bs:
+            self.log("仍停留在购买与出售页面，重发一次 PageDown 进入车辆菜单。", level="WARN")
+            self.hw_press("pagedown", delay=0.15)
+            if self._wait_for_cj_vehicle_menu(timeout=20.0, hard_timeout=60.0):
+                return True
+
+        self.log("未确认进入车辆菜单，无法继续当前车辆流程。", level="WARN")
+        return False
+
+    def _open_current_vehicle_mastery(self, pos_sjy=None, from_recovery=False):
+        """进入当前已装备车辆的专精页面，不包含任何选车操作。"""
+        if pos_sjy is None:
+            if from_recovery:
+                self.log("全局恢复确认仍处于加点流程，准备重试当前已装备车辆。")
+                if not self._enter_cj_vehicle_menu():
+                    self.log("当前车辆加点重试失败：无法进入车辆菜单。", level="WARN")
+                    return False
+            pos_sjy = self._wait_for_uandt_ready(
+                timeout=16.0,
+                stable_frames=3,
+                min_brightness=42.0,
+                press_esc_when_missing=not from_recovery,
+            )
+
+        if not pos_sjy:
+            self.log("找不到稳定可交互的升级页面")
+            return False
+
+        self._save_upgrade_debug(
+            "before_uandt_click",
+            pos_uandt=pos_sjy,
+            note="菜单已稳定，准备鼠标点击升级与调校",
+        )
+        self.game_click(pos_sjy, clicks=1, hold=0.12, gap=0.10, use_send=True)
+        time.sleep(1.2)
+        self._save_upgrade_debug(
+            "after_uandt_click",
+            pos_uandt=pos_sjy,
+            note="已用 SendMessage 鼠标点击升级与调校，准备查找车辆专精",
+        )
+
+        pos_cls = self.wait_for_any_image_gray(
+            ["clsldcnw.png", "clsldcnb.png"],
+            region=self.regions["全界面"],
+            threshold=0.62,
+            timeout=5,
+            interval=0.25,
+            fast_mode=False,
+        )
+        if not pos_cls:
+            self.log("稳定后鼠标点击升级与调校仍未找到车辆专精，改用 Down+Enter 兜底后复查。")
+            self.hw_press("down")
+            time.sleep(0.25)
+            self.hw_press("enter")
+            time.sleep(1.2)
+            self._save_upgrade_debug(
+                "after_uandt_key_fallback",
+                pos_uandt=pos_sjy,
+                note="鼠标点击未进入，已用 Down+Enter 兜底，准备复查车辆专精",
+            )
+            pos_cls = self.wait_for_any_image_gray(
+                ["clsldcnw.png", "clsldcnb.png"],
+                region=self.regions["全界面"],
+                threshold=0.62,
+                timeout=5,
+                interval=0.25,
+                fast_mode=False,
+            )
+        if not pos_cls:
+            self.log("未找到车辆专精,可能未成功进入当前车辆升级页面或升级与调校点击未生效。")
+            return False
+
+        self._save_upgrade_debug(
+            "before_mastery_click",
+            pos_uandt=pos_sjy,
+            pos_cls=pos_cls,
+            note="准备点击车辆专精",
+        )
+        self.game_click(pos_cls, clicks=1, hold=0.12, gap=0.10, use_send=True)
+        time.sleep(1.5)
+        self._save_upgrade_debug(
+            "after_mastery_click",
+            pos_uandt=pos_sjy,
+            pos_cls=pos_cls,
+            note="已点击车辆专精，准备判断技能是否已点",
+        )
+        return True
+
+    def _send_mastery_path_once(self):
+        """归位后发送一次完整技能路径，返回 sent/retry/stop/failed。"""
+        if not self._home_mastery_cursor():
+            return "failed"
+
+        self._cj_mastery_attempted = True
+        time.sleep(0.4)
+        self.hw_press("enter", delay=0.12, use_send=True)
+        time.sleep(1.2)
+
+        popup_result = self._handle_mastery_popup("root")
+        if popup_result is not None:
+            return popup_result
+
+        for step_index, dk in enumerate(self.config["skill_dirs"], 1):
+            if not self.is_running:
+                return "failed"
+            self.hw_press(dk, delay=0.12, use_send=True)
+            time.sleep(0.2)
+            self.hw_press("enter", delay=0.12, use_send=True)
+            time.sleep(1.2)
+
+            popup_result = self._handle_mastery_popup(step_index)
+            if popup_result is not None:
+                return popup_result
+        return "sent"
+
+    def _run_current_vehicle_mastery(self, target_count, pos_sjy=None, from_recovery=False):
+        """执行当前车辆加点，返回 (本次是否成功, 是否应结束整个超抽步骤)。"""
+        if not self._open_current_vehicle_mastery(pos_sjy=pos_sjy, from_recovery=from_recovery):
+            return False, False
+
+        mastery_complete, pink_ratio = self._mastery_completion_state()
+        attempted = bool(getattr(self, "_cj_mastery_attempted", False))
+
+        if mastery_complete:
+            if from_recovery and attempted:
+                self.cj_counter += 1
+                self._clear_cj_mastery_state("恢复后确认最终节点已购买")
+                self.update_running_ui("超级抽奖", self.cj_counter, target_count)
+                self.log(
+                    f"恢复后确认最终节点已购买，补记超级抽奖计数 +1: "
+                    f"{self.cj_counter}/{target_count} pink_ratio={pink_ratio:.3f}"
+                )
+            else:
+                self.log(f"该车辆最终超级抽奖节点已购买，跳过计数 pink_ratio={pink_ratio:.3f}")
+                self._clear_cj_mastery_state("进入页面时最终节点已购买")
+            return True, False
+
+        best_ratio = pink_ratio
+        total_attempts = self._MASTERY_LOCAL_RETRIES + 1
+        for path_attempt in range(1, total_attempts + 1):
+            if path_attempt > 1:
+                self.log(f"技能路径本地归位重试: {path_attempt}/{total_attempts}", level="WARN")
+
+            path_result = self._send_mastery_path_once()
+            if path_result == "stop":
+                return True, True
+            if path_result == "failed":
+                return False, False
+            if path_result == "retry":
+                if path_attempt < total_attempts:
+                    continue
+                break
+
+            mastery_complete, pink_ratio = self._wait_for_mastery_complete(timeout=2.0)
+            best_ratio = max(best_ratio, pink_ratio)
+            if mastery_complete:
+                self.cj_counter += 1
+                self._clear_cj_mastery_state("最终节点购买成功")
+                self.update_running_ui("超级抽奖", self.cj_counter, target_count)
+                self.log(
+                    f"最终节点颜色确认成功，超级抽奖计数 +1: "
+                    f"{self.cj_counter}/{target_count} pink_ratio={pink_ratio:.3f}"
+                )
+                return True, False
+            if path_attempt < total_attempts:
+                self.log(
+                    f"技能路径结束但最终节点未购买，将归位后从头重试: "
+                    f"pink_ratio={pink_ratio:.3f}",
+                    level="WARN",
+                )
+
+        self.log(
+            f"技能路径本地重试 {total_attempts} 次后最终节点仍未购买，触发全局恢复: "
+            f"pink_ratio={best_ratio:.3f}",
+            level="WARN",
+        )
+        self._save_upgrade_debug(
+            "mastery_final_node_not_purchased",
+            note="归位并重放技能路径后最终节点颜色仍未通过，禁止计数并触发全局恢复",
+            extra={"pink_ratio": best_ratio, "path_attempts": total_attempts},
+        )
+        return False, False
+
+    def _leave_current_vehicle_mastery(self, resume_vehicle_menu=False):
+        self.hw_press("esc")
+        time.sleep(1.2)
+        self.hw_press("esc")
+        time.sleep(0.8)
+
+        if not self._wait_for_cj_vehicle_menu(timeout=2.0, hard_timeout=4.0):
+            self.log("退出车辆专精后仍未回到车辆主菜单，补发一次 Esc。", level="WARN")
+            self.hw_press("esc")
+            time.sleep(1.0)
+            if not self._wait_for_cj_vehicle_menu(timeout=3.0, hard_timeout=6.0):
+                self.log("退出车辆专精后无法确认车辆主菜单。", level="WARN")
+                return False
+
+        if resume_vehicle_menu:
+            self._cj_resume_vehicle_menu = True
+            self.log("当前车辆复核完成，已回到车辆菜单，将直接继续设计与喷涂选车。")
+            return True
+        self.hw_press("up", delay=0.15)
+        time.sleep(0.8)
+        return True
+
+    def retry_current_vehicle_mastery_after_recovery(self, target_count):
+        """全局恢复后只重试当前已装备车辆，绝不重新进入选车循环。"""
+        if not getattr(self, "_cj_mastery_in_progress", False):
+            return True, False
+        success, stop_task = self._run_current_vehicle_mastery(
+            target_count,
+            from_recovery=True,
+        )
+        if success and not stop_task:
+            left_mastery = self._leave_current_vehicle_mastery(
+                resume_vehicle_menu=self.cj_counter < target_count,
+            )
+            if not left_mastery:
+                return False, False
+        return success, stop_task
+
     def _is_boarding_transition(self, min_dark_mean=8.0):
         """判断是否已经离开上车按钮菜单，进入上车/车辆切换过场。
 
@@ -84,6 +586,8 @@ class CJMixin:
         press_esc_when_missing=True 时，适用于"上车"后仍停在收藏/详情层，需要 Esc 退回车辆主菜单的场景。
         """
         start = time.time()
+        interaction_deadline = start + timeout
+        hard_deadline = start + max(60.0, timeout + 45.0)
         stable = 0
         last_pos = None
         dark_logged = False
@@ -92,7 +596,7 @@ class CJMixin:
         last_esc_at = 0.0
         slow_mode = False  # 黑屏恢复后切换为慢速 Esc 模式（3s 间隔）
 
-        while time.time() - start < timeout:
+        while time.time() < interaction_deadline and time.time() < hard_deadline:
             if not self.is_running:
                 return None
 
@@ -124,6 +628,8 @@ class CJMixin:
                 stable = 0
                 # 检测黑屏：亮度极低时标记，画面恢复后切换慢速 Esc 模式
                 if last_brightness < 5.0:
+                    # 黑屏加载不消耗真正的菜单交互时间，但仍受 hard_deadline 约束。
+                    interaction_deadline = min(hard_deadline, time.time() + timeout)
                     if not slow_mode:
                         self.log(f"检测到画面暗屏 brightness={last_brightness:.1f}，恢复后将切换慢速 Esc 模式")
                         slow_mode = True
@@ -131,6 +637,7 @@ class CJMixin:
                 elif slow_mode and last_esc_at == 0 and last_brightness >= min_brightness:
                     self.log(f"画面已恢复 brightness={last_brightness:.1f}，进入慢速 Esc 模式（3s间隔）")
                     last_esc_at = time.time()
+                    interaction_deadline = min(hard_deadline, time.time() + timeout)
 
                 esc_interval = 3.0 if slow_mode else 1.2
 
@@ -139,6 +646,7 @@ class CJMixin:
                     self.log(f"上车后尚未看到升级与调校，画面已亮起，按 Esc 尝试退回车辆菜单 brightness={last_brightness:.1f}")
                     self.hw_press("esc")
                     last_esc_at = time.time()
+                    interaction_deadline = min(hard_deadline, time.time() + timeout)
                     if slow_mode:
                         time.sleep(3.0)
                     else:
@@ -146,7 +654,10 @@ class CJMixin:
 
             time.sleep(0.35)
 
-        self.log(f"等待升级与调校菜单稳定超时: last_seen={last_seen} brightness={last_brightness:.1f} stable={stable}")
+        self.log(
+            f"等待升级与调校菜单稳定超时: last_seen={last_seen} "
+            f"brightness={last_brightness:.1f} stable={stable} elapsed={time.time() - start:.1f}s"
+        )
         return None
 
     def _detect_selected_card_focus(self):
@@ -280,42 +791,15 @@ class CJMixin:
         # 【新增】:初始化记忆页码
         if not hasattr(self, 'memory_car_page'):
             self.memory_car_page = 0
-        self.log("准备验证/进入菜单...")
-        if not self.enter_menu():
-            return False
-
-        self.log("进入车辆与收藏...")
-        self.hw_press("pagedown", delay=0.15)
-        time.sleep(1.0)
-
-        pos_buycar = self.wait_for_buy_and_used_car(timeout=15)
-        if not pos_buycar:
-            self.log("未识别到 购买新车与二手车")
-            return False
-
-        self.game_click(pos_buycar)
-        time.sleep(0.8)
-        self.hw_press("enter")
-        time.sleep(5)
-
-
-        pos_bs = self.wait_for_any_image_gray(
-            ["buyandsell-w.png", "buyandsell-b.png"],
-            region=self.regions["左"],
-            threshold=0.75,
-            timeout=60,
-            interval=0.5,
-            fast_mode=True
-        )
-        if not pos_bs:
-            self.log("未找到购买与出售")
-            return False
-
-        self.game_click(pos_bs)
-        time.sleep(1.0)
-        self.hw_press("pagedown", delay=0.15)
-        self.log("进入车辆界面...")
-        time.sleep(0.5)
+        resume_vehicle_menu = bool(getattr(self, "_cj_resume_vehicle_menu", False))
+        self._cj_resume_vehicle_menu = False
+        if resume_vehicle_menu and self._wait_for_cj_vehicle_menu(timeout=4.0):
+            self.log("全局恢复后的当前车辆复核已完成，直接从车辆菜单继续选车。")
+        else:
+            if resume_vehicle_menu:
+                self.log("车辆菜单续跑锚点未命中，改从主菜单按正常路径重新进入。", level="WARN")
+            if not self._enter_cj_vehicle_menu():
+                return False
 
         while self.cj_counter < target_count:
             if not self.is_running:
@@ -564,122 +1048,27 @@ class CJMixin:
                     extra={"current_page": current_page}
                 )
 
-            pos_sjy = self._wait_for_uandt_ready(timeout=16.0, stable_frames=3, min_brightness=42.0, press_esc_when_missing=True)
-
+            # 选车和上车逻辑到此为止。后续若失败，全局恢复只会重试这辆当前车的加点。
+            self._begin_cj_mastery()
+            pos_sjy = self._wait_for_uandt_ready(
+                timeout=16.0,
+                stable_frames=3,
+                min_brightness=42.0,
+                press_esc_when_missing=True,
+            )
             if not pos_sjy:
                 self.log("找不到稳定可交互的升级页面")
                 return False
-
-            self._save_upgrade_debug(
-                "before_uandt_click",
-                pos_uandt=pos_sjy,
-                note="菜单已稳定，准备鼠标点击升级与调校"
+            mastery_success, stop_task = self._run_current_vehicle_mastery(
+                target_count,
+                pos_sjy=pos_sjy,
             )
-            # 先等菜单稳定，再用鼠标点击。之前失败主要是暗屏加载期点太早。
-            self.game_click(pos_sjy, clicks=1, hold=0.12, gap=0.10, use_send=True)
-            time.sleep(1.2)
-            self._save_upgrade_debug(
-                "after_uandt_click",
-                pos_uandt=pos_sjy,
-                note="已用 SendMessage 鼠标点击升级与调校，准备查找车辆专精"
-            )
-
-            pos_cls = self.wait_for_any_image_gray(
-                ["clsldcnw.png", "clsldcnb.png"],
-                region=self.regions["全界面"],
-                threshold=0.62,
-                timeout=5,
-                interval=0.25,
-                fast_mode=False
-            )
-            if not pos_cls:
-                self.log("稳定后鼠标点击升级与调校仍未找到车辆专精，改用 Down+Enter 兜底后复查。")
-                self.hw_press("down")
-                time.sleep(0.25)
-                self.hw_press("enter")
-                time.sleep(1.2)
-                self._save_upgrade_debug(
-                    "after_uandt_key_fallback",
-                    pos_uandt=pos_sjy,
-                    note="鼠标点击未进入，已用 Down+Enter 兜底，准备复查车辆专精"
-                )
-                pos_cls = self.wait_for_any_image_gray(
-                    ["clsldcnw.png", "clsldcnb.png"],
-                    region=self.regions["全界面"],
-                    threshold=0.62,
-                    timeout=5,
-                    interval=0.25,
-                    fast_mode=False
-                )
-            if not pos_cls:
-                self.log("未找到车辆专精,可能未成功进入目标车辆升级页面或升级与调校点击未生效。")
+            if not mastery_success:
                 return False
-            self._save_upgrade_debug(
-                "before_mastery_click",
-                pos_uandt=pos_sjy,
-                pos_cls=pos_cls,
-                note="准备点击车辆专精"
-            )
-            self.game_click(pos_cls, clicks=1, hold=0.12, gap=0.10, use_send=True)
-            time.sleep(1.5)
-            self._save_upgrade_debug(
-                "after_mastery_click",
-                pos_uandt=pos_sjy,
-                pos_cls=pos_cls,
-                note="已点击车辆专精，准备判断技能是否已点"
-            )
-
-            pos_exp = self.wait_for_any_image(
-                ["EXPwU.png"],
-                region=self.regions["左"],
-                threshold=0.75,
-                timeout=1.5,
-                interval=0.3,
-                fast_mode=True
-            )
-
-            if pos_exp:
-                self.log("该车辆技能已点过,跳过计数")
-            else:
-                time.sleep(1.0)
-                self.hw_press("enter")
-                time.sleep(1.5)
-
-                for dk in self.config["skill_dirs"]:
-                    if not self.is_running:
-                        return False
-                    self.hw_press(dk)
-                    time.sleep(0.2)
-                    self.hw_press("enter")
-                    time.sleep(1.2)
-
-                # 只要已经进入专精并执行了技能路径，就计为本次超抽处理完成。
-                # 旧逻辑在 SPNE 提前 return 前才加计数，导致成功处理车辆但计数不增加。
-                self.cj_counter += 1
-                self.update_running_ui("超级抽奖", self.cj_counter, target_count)
-                self.log(f"超级抽奖计数 +1: {self.cj_counter}/{target_count}")
-
-                spne_found = self.find_image_gray("SPNE.png", region=self.regions["全界面"], threshold=0.70)
-
-                if spne_found:
-                    self.log("已无技能点或技能已点完,提前结束抽奖!")
-                    time.sleep(1.0)
-                    self.hw_press("enter")
-                    time.sleep(0.8)
-                    self.hw_press("esc")
-                    time.sleep(1.0)
-                    self.hw_press("esc")
-                    time.sleep(1.0)
-                    self.hw_press("esc")
-                    time.sleep(1.0)
-                    return True
-
-            self.hw_press("esc")
-            time.sleep(1.2)
-            self.hw_press("esc")
-            time.sleep(0.8)
-            self.hw_press("up", delay=0.15)
-            time.sleep(0.8)
+            if stop_task:
+                return True
+            if not self._leave_current_vehicle_mastery():
+                return False
         self.hw_press("esc")
         time.sleep(1.2)
         self.hw_press("esc")
