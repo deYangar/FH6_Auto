@@ -587,7 +587,7 @@ class CJMixin:
         """
         start = time.time()
         interaction_deadline = start + timeout
-        hard_deadline = start + max(60.0, timeout + 45.0)
+        hard_deadline = start + max(90.0, timeout + 45.0)
         stable = 0
         last_pos = None
         dark_logged = False
