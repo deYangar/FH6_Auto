@@ -10,7 +10,6 @@ from anti_cheat import AntiCheatMixin
 from cj_logic import CJMixin
 from config import set_scheme_dir
 from fh6_backend import BackgroundInputManager
-from sell_logic import SellMixin
 from vision import VisionMixin
 
 
@@ -554,7 +553,9 @@ class RecognitionOrderingTests(unittest.TestCase):
         vision = object.__new__(VisionMixin)
         vision.is_running = True
         vision.regions = {"全界面": (0, 0, 1000, 700)}
-        vision.config = {"class_image": "classS2829.png"}
+        # use_yolo=False：本测试验证模板匹配路径的排序行为；
+        # 默认开启的 YOLO 分支会对合成截图推理返回空，与本测试目标无关。
+        vision.config = {"class_image": "classS2829.png", "use_yolo": False}
         vision.template_cache = {}
         vision.scaled_template_cache = {}
         vision.file_template_cache = {}
@@ -569,35 +570,9 @@ class RecognitionOrderingTests(unittest.TestCase):
         self.assertIsNotNone(position)
         self.assertLess(position[0], 450, "不应跳过左侧当前车而选择下一辆")
 
-
-class _DummySellFocus(SellMixin):
-    def __init__(self, remove_position):
-        self.regions = {"中间": (0, 0, 100, 100)}
-        self.remove_position = remove_position
-        self.events = []
-
-    def log(self, message, level=None):
-        self.events.append(("log", message))
-
-    def hw_press(self, key, **kwargs):
-        self.events.append(("key", key))
-
-    def wait_for_image_gray(self, *args, **kwargs):
-        self.events.append(("detect", args[0]))
-        return self.remove_position
-
-
-class SellFocusFallbackTests(unittest.TestCase):
-    @patch("sell_logic.time.sleep", return_value=None)
-    def test_template_miss_checks_current_focus_before_navigation(self, _sleep):
-        seller = _DummySellFocus((50, 50))
-
-        position = seller._try_open_focused_remove_menu()
-
-        self.assertEqual((50, 50), position)
-        key_events = [event for event in seller.events if event[0] == "key"]
-        self.assertEqual([("key", "enter")], key_events)
-        self.assertNotIn(("key", "right"), key_events)
+# 注：原 SellFocusFallbackTests 已于 2026-08-04 删除——其守护的
+# _try_open_focused_remove_menu 兜底逻辑在 v1.2.11.3 (4a6bfd9) 已因
+# "只验证 remove 按钮会误删非目标车辆" 被有意移除，测试成为孤儿。
 
 
 if __name__ == "__main__":
