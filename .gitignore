@@ -78,3 +78,8 @@ yolo_tool/yolo26s.pt
 
 # 模型回滚备份（本地保留，放 bk/ 避免被 --add-data 打进 exe）
 bk/yolo_best_prev_*.onnx
+
+# 本地性质文档（不推上线）
+docs/CODE_REVIEW_*
+docs/YOLO*
+yolo_tool/_archive/
