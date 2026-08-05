@@ -914,7 +914,7 @@ class VisionMixin:
 
         # class_score：取同一车卡上等级标签框的最高 conf；没有就给 0.0。
         # 0.0 会让 cj_logic._verify_target_point_b600 落到模板二次校验（安全网不被架空）；
-        # 非 0 时由 _verify_target_point_b600 按 YOLO 门槛（0.50）过硬校验。
+        # 非 0 时由 _verify_target_point_b600 按 YOLO 门槛（0.30）过硬校验。
         # 区域判定放宽：等级标签贴着车卡边缘、常有一部分露出车卡框外，原 containment>=0.5
         # 几乎必然不成立（cls 恒为 0）导致每次都降级冗余模板匹配。改为「标签中心落在
         # 车卡框外扩 30px 内」或「containment>=0.2」。

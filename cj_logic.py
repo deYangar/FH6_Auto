@@ -702,11 +702,12 @@ class CJMixin:
             strict_class_score = float(strict_meta.get("class_score", 0.0) or 0.0)
             # 严格识别阶段是在点击/hover 前完成的，可信度最高；点击后选中框会改变局部外观，
             # 不能用 hover 后的小区域匹配反过来否定前面的高置信等级标签。
-            # YOLO 分支用独立低门槛：其等级标签类实测 conf 0.5~0.7（比模板灰度分低），
-            # 且已有车型分类 + NEW 角标双重交叉验证，>=0.50 即安全过硬校验，
+            # YOLO 分支用独立低门槛：其等级标签类实测 conf 0.3~0.9（比模板灰度分低，
+            # 2026-08-05 实测真目标标签 conf 可低至 0.34），且已有车型分类 + NEW 角标
+            # 双重交叉验证，>=0.30 即安全过硬校验（与 tag_conf_floor 一致），
             # 避免每次再跑一遍冗余模板匹配。模板路径保持原阈值。
             if str(strict_meta.get("source", "")) == "yolo":
-                class_gate = 0.50
+                class_gate = 0.30
             else:
                 class_gate = threshold
             if strict_class_score >= class_gate:
