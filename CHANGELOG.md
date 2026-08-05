@@ -6,6 +6,33 @@
 
 ## 更新日志
 
+### v1.3.3 (2026-08-05)
+
+**🚀 自 v1.3.2 以来的一揽子更新（含两位社区贡献者 PR）**
+
+**OCR 选车提速 + 三阶段点击 fallback（PR #29，@hui-shao）**
+- 搜索层每步固定连按 5 次 ↓ 再做 1 次 OCR（OCR 频率 1/1→1/5），卡底判定保留；命中层点击坐标改为复选框中心（修复偏移 ~230px bug），SendMessage 单次后台点击 + hold 延长
+- 三阶段 fallback：鼠标后台点击 → 盲 Enter → 键盘移动高亮（最稳路径保留）；实测 50 行列表约 14s→6s（2~3 倍提速）
+
+**后台车辆专精加点与全局恢复稳定性（PR #28，@AriaSulT）**
+- 专精加点重构：归一化 ROI 检测完成状态、加点弹窗状态机、锁定弹窗检测与关闭、光标归位
+- 后台输入稳定化：Alt/Win 切窗期间暂停按键投递，防止技能树操作被拆开
+- 新增 481 行回归测试
+
+**筛选三阶段 fallback 阶段3 预检修复**
+- 阶段3 按 Enter 前预检复选框状态，已勾选直接返回，避免第三次 toggle 导致筛选静默失效
+- 删除死代码 `_search_and_focus` 与 `enter_first=True` 死分支；新增 `tests/test_filter_nav.py` 三阶段状态机测试
+
+**升级与调校等待硬上限 60s→90s**：测试机加载慢时 61s 硬上限不够，改为 max(90, timeout+45)
+
+**超抽选车：YOLO 等级标签二次校验误杀真目标**
+- YOLO 已通过车型分类 + NEW 角标交叉验证，但等级标签 conf 波动至 0.3x 时被二次校验硬门槛（0.50）拒绝，降级模板匹配（classS2829.png 与网格标签样式不一致）也失败，导致本批超抽提前结束
+- 修复：YOLO 分支等级标签硬门槛 0.50→0.30（与 tag_conf_floor 一致）；YOLO 判定通过后不再触发模板匹配兑底
+
+**测试修复**：`test_strict_matcher_selects_first_visible_new_car` 补 use_yolo=False；删除孤儿测试 `test_template_miss_checks_current_focus_before_navigation`
+
+**🙏 感谢 @hui-shao 与 @AriaSulT 的贡献！**
+
 ### v1.3.2 (2026-07-31)
 
 **🔥 热修复：删车流程误上车修复（[#26](https://github.com/deYangar/FH6_Auto/issues/26)）**

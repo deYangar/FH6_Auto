@@ -134,6 +134,9 @@ class FH_UltimateBot(
         self.cj_counter = 0
         self.sc_count = 0
         self.global_loop_current = 0
+        self._cj_mastery_in_progress = False
+        self._cj_mastery_attempted = False
+        self._cj_resume_vehicle_menu = False
 
         self.template_cache = {}
         self.scaled_template_cache = {}
@@ -1945,6 +1948,9 @@ class FH_UltimateBot(
         self.is_running = True
         self.save_config()
         self._run_settings = self._snapshot_run_settings()
+        self._cj_mastery_in_progress = False
+        self._cj_mastery_attempted = False
+        self._cj_resume_vehicle_menu = False
         self._pipeline_cleanup_complete = False
         self.start_anti_cheat_heartbeat()
 
@@ -1991,7 +1997,13 @@ class FH_UltimateBot(
                     elif step_name == "buy":
                         success = self.logic_buy_car(self._run_settings["counts"]["buy"])
                     elif step_name == "cj":
-                        success = self.logic_super_wheelspin(self._run_settings["counts"]["cj"])
+                        if getattr(self, "_cj_mastery_in_progress", False):
+                            # 上一次当前车辆加点重试仍失败；禁止进入选车循环，
+                            # 直接再走一次全局恢复后重试当前已装备车辆。
+                            self.log("当前车辆加点仍待重试，跳过选车并再次触发全局恢复。", level="WARN")
+                            success = False
+                        else:
+                            success = self.logic_super_wheelspin(self._run_settings["counts"]["cj"])
                     elif step_name == "sell":
                         success = self.find_and_remove_consumable_car(self._run_settings["counts"]["sell"])
                 except Exception as e:
@@ -2015,7 +2027,20 @@ class FH_UltimateBot(
                     self.log(f"正在进行全局恢复 (第 {continuous_failures}/{MAX_RECOVERIES} 次允许的重试)...")
 
                     if self.attempt_recovery():
-                        continue # 恢复成功,回到 while 顶部再次尝试这个任务
+                        if step_name == "cj" and getattr(self, "_cj_mastery_in_progress", False):
+                            retry_success, stop_cj = self.retry_current_vehicle_mastery_after_recovery(
+                                self._run_settings["counts"]["cj"]
+                            )
+                            if not retry_success:
+                                # 状态标志保持不变；下一轮会再次恢复，不会进入选车循环。
+                                continue
+                            continuous_failures = 0
+                            if stop_cj or self.cj_counter >= self._run_settings["counts"]["cj"]:
+                                success = True
+                            else:
+                                continue
+                        else:
+                            continue # 恢复成功,回到 while 顶部再次尝试这个任务
                     else:
                         self.log("致命错误:连退回菜单/重启也失败了,彻底停止。")
                         break

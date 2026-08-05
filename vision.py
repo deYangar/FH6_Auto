@@ -914,7 +914,7 @@ class VisionMixin:
 
         # class_score：取同一车卡上等级标签框的最高 conf；没有就给 0.0。
         # 0.0 会让 cj_logic._verify_target_point_b600 落到模板二次校验（安全网不被架空）；
-        # 非 0 时由 _verify_target_point_b600 按 YOLO 门槛（0.50）过硬校验。
+        # 非 0 时由 _verify_target_point_b600 按 YOLO 门槛（0.30）过硬校验。
         # 区域判定放宽：等级标签贴着车卡边缘、常有一部分露出车卡框外，原 containment>=0.5
         # 几乎必然不成立（cls 恒为 0）导致每次都降级冗余模板匹配。改为「标签中心落在
         # 车卡框外扩 30px 内」或「containment>=0.2」。
@@ -1339,6 +1339,9 @@ class VisionMixin:
         - 绝对超时 absolute_timeout：无论是否找到目标，总时间上限，
           防止“永远找不到目标”时无限循环（如超抽次数>买车数）。
         """
+        # 空帧连击只描述当前页面，不能沿用上一页或上一次任务的计数。
+        self._yolo_empty_streak = 0
+        self._yolo_empty_start = None
         profile = get_recognition_profile(self, "cj.strict_new_car")
         required = max(1, int(profile.get("confirm_frames", 2)))
         max_distance = max(10, int(profile.get("confirm_distance", 70)))
