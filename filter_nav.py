@@ -462,130 +462,6 @@ class FilterNavMixin:
                 time.sleep(_PRESS_GAP)
             time.sleep(_PAGE_SETTLE)
 
-    def _search_and_focus(self, target, label):
-        """
-        逐键搜索目标选项（每按 1 次下就 OCR 一次）。
-
-        零过头原理：列表滚动时高亮贴着屏幕底边前进，目标行入屏的那一刻
-        高亮正好落在它上面 -> 此时直接 Enter 即命中目标，不会扫过再回头。
-        保险：Enter 后用复选框像素差验证，没命中再按一次 Enter 回滚误勾，降级点击。
-        终止条件：
-        - 画面不再变化（文字+高亮位置+像素三重确认）-> 列表到底，目标不存在
-        - 整页文字绕回已见过的页面（≥3 步前且像素无变化）-> 列表循环，目标不存在
-        """
-        target_n = _norm_text(target)
-        seen_pages = {}          # page_key -> 首次出现步数（循环检测用）
-        last_page_key = None
-        first_check = True
-        stuck_count = 0          # 连续画面不变计数（page_key 模糊匹配用）
-        pixel_stuck_count = 0    # 连续像素无变化计数（不依赖 OCR 的卡底检测）
-        last_hl_idx = None       # 上一步高亮行下标（卡底检测辅助）
-        last_panel_small = None  # 上一步面板缩略图（像素差兜底）
-
-        for step in range(_MAX_WALK_STEPS):
-            if not self.is_running:
-                return False
-            panel = self._capture_filter_panel()
-            if panel is None:
-                time.sleep(0.3)
-                continue
-            lines = self._ocr_panel_lines(panel)
-            if not lines:
-                time.sleep(0.3)
-                continue
-
-            page_key = tuple(_norm_text(l["text"]) for l in lines)
-            hl_idx = self._pick_highlight_line(panel, lines)
-
-            # 缩略图像素差：检测高亮移动/列表滚动（OCR 文字不变时的兜底信号）
-            panel_small = cv2.resize(panel, (64, 64))
-            img_changed = False
-            if last_panel_small is not None:
-                diff = np.abs(panel_small.astype(np.int16)
-                              - last_panel_small.astype(np.int16))
-                changed_px = int(np.count_nonzero(np.any(diff > 30, axis=2)))
-                img_changed = changed_px > 15
-
-            # ---- 像素级卡底检测（v1.2.11.1 核心修复）----
-            # 不依赖 OCR 文本：连续 3 次按↓后面板像素无任何变化 → 列表已到底。
-            # 解决 OCR 抖动导致 page_key 每次不同、永远判不了到底的死循环。
-            if last_panel_small is not None:
-                if not img_changed:
-                    pixel_stuck_count += 1
-                    if pixel_stuck_count >= 3:
-                        self._save_filter_debug(panel, lines, hl_idx,
-                                                f"{label}_{target}_pixel_stuck")
-                        self.log(f"[{label}] 像素级卡底检测：连续 {pixel_stuck_count} 次按↓画面无变化，判定到底")
-                        return False
-                else:
-                    pixel_stuck_count = 0
-
-            # ---- 卡底检测（page_key 模糊比较，OCR 文本级兜）----
-            # 文字不变时，不能只看 page_key：高亮在可见区内移动时文字不变
-            # 但高亮行下标变了 / 像素有变化 → 说明在动，不是卡底
-            if _page_key_similar(page_key, last_page_key):
-                hl_moved = (hl_idx is not None and last_hl_idx is not None
-                            and hl_idx != last_hl_idx)
-                if hl_moved or img_changed:
-                    stuck_count = 0   # 高亮在移动 / 画面有变化，不是卡底
-                else:
-                    stuck_count += 1
-                    if stuck_count >= 2:
-                        self._save_filter_debug(panel, lines, hl_idx,
-                                                f"{label}_{target}_stuck")
-                        return False
-                self.hw_press("down", delay=_PRESS_DELAY)
-                time.sleep(_PRESS_GAP + 0.05)
-                last_hl_idx = hl_idx
-                last_panel_small = panel_small
-                continue
-
-            stuck_count = 0
-
-            # ---- 循环检测 ----
-            # 整页文字绕回已见过的页面 → 列表循环，目标不存在。
-            # 加两道保险防 OCR 噪声误判：
-            #   1) 步数门槛：≥3 步前见过才判循环（1~2 步内的重复多为 OCR 抖动）
-            #   2) 像素校验：画面有变化（高亮在动）时不判循环
-            if page_key in seen_pages:
-                if step - seen_pages[page_key] >= 3 and not img_changed:
-                    return False
-                # 否则忽略（OCR 噪声或高亮移动中的偶然重复）
-            else:
-                seen_pages[page_key] = step
-
-            last_page_key = page_key
-            last_hl_idx = hl_idx
-            last_panel_small = panel_small
-
-            self._save_filter_debug(panel, lines, hl_idx, f"{label}_{target}_step{step}")
-
-            # 目标在可见行中？
-            tgt_idx = None
-            for i, l in enumerate(lines):
-                if self._text_matches(l["text"], target_n):
-                    tgt_idx = i
-                    break
-
-            if tgt_idx is not None:
-                # 命中后直接调用 _toggle_line(enter_first=False)：纯鼠标后台点击
-                # （不走 _move_highlight_and_toggle 键盘移动+Enter，省 ~1-2s）
-                if hl_idx is not None:
-                    self.log(f"[{label}] 命中目标（高亮行={hl_idx}，目标行={tgt_idx}），后台直接点击")
-                    return self._toggle_line(panel, lines[tgt_idx], label, enter_first=False)
-                if not first_check:
-                    self.log(f"[{label}] 命中目标（刚入屏），后台直接点击")
-                    return self._toggle_line(panel, lines[tgt_idx], label, enter_first=False)
-                self.log(f"[{label}] 命中目标（高亮位置未知），后台直接点击")
-                return self._toggle_line(panel, lines[tgt_idx], label, enter_first=False)
-
-            first_check = False
-            # 不在屏：按 1 次下（逐键检查，不会扫过目标）
-            self.hw_press("down", delay=_PRESS_DELAY)
-            time.sleep(_PRESS_GAP + 0.05)
-
-        return False
-
     def _search_with_skip(self, target, label):
         """逐键搜索目标，每步固定跳 5 次 ↓（向下搜索场景下安全：目标只能从屏底进入）。
 
@@ -646,6 +522,8 @@ class FilterNavMixin:
                 if not img_changed:
                     pixel_stuck_count += 1
                     if pixel_stuck_count >= 3:
+                        self._save_filter_debug(panel, lines, hl_idx,
+                                                f"{label}_{target}_pixel_stuck")
                         self.log(
                             f"[{label}] 像素级卡底：连续 {pixel_stuck_count} 次无变化"
                         )
@@ -662,6 +540,8 @@ class FilterNavMixin:
                 else:
                     stuck_count += 1
                     if stuck_count >= 2:
+                        self._save_filter_debug(panel, lines, hl_idx,
+                                                f"{label}_{target}_ocr_stuck")
                         self.log(f"[{label}] OCR 卡底：列表到底")
                         return False
             else:
@@ -670,6 +550,8 @@ class FilterNavMixin:
             # 循环检测（≥3 步前见过 + 像素无变化 → 列表循环）
             if page_key in seen_pages:
                 if step - seen_pages[page_key] >= 3 and not img_changed:
+                    self._save_filter_debug(panel, lines, hl_idx,
+                                            f"{label}_{target}_loop")
                     self.log(f"[{label}] 循环检测：列表循环")
                     return False
             else:
@@ -687,6 +569,8 @@ class FilterNavMixin:
                     break
 
             if tgt_idx is not None:
+                self._save_filter_debug(panel, lines, hl_idx,
+                                        f"{label}_{target}_hit")
                 self.log(
                     f"[{label}] 命中目标（hl_idx={hl_idx}, tgt_idx={tgt_idx}），后台直接点击"
                 )
@@ -744,7 +628,7 @@ class FilterNavMixin:
     def _toggle_line(self, panel, line, label, enter_first=False):
         """勾选目标行：三阶段 fallback（鼠标点击 → 盲 Enter → 键盘移动+Enter）。
 
-        enter_first=True：先 Enter（依赖高亮在该行）；enter_first=False：先鼠标后台点击。
+        enter_first 参数保留兼容（当前无调用方传 True）；
         失败时统一 fallback：阶段 2 盲 Enter → 阶段 3 _move_highlight_and_toggle。
         """
         gx, gy, gw, gh = self.regions["全界面"]
@@ -764,21 +648,6 @@ class FilterNavMixin:
         before = _cb_crop(panel)
         if before is None or before.size == 0:
             return False
-
-        # Enter 优先路径：高亮应在目标行
-        if enter_first:
-            self.hw_press("enter")
-            time.sleep(0.6)
-            after = _cb_crop(self._capture_filter_panel())
-            if after is not None and after.shape == before.shape:
-                diff = float(np.abs(after - before).mean())
-                self.log(f"[{label}] Enter 行「{line['text']}」 复选框差值={diff:.1f}")
-                if diff > _CLICK_DIFF_THRESHOLD:
-                    return True
-            # 没命中：再按一次 Enter 回滚可能的误勾，降级点击
-            self.hw_press("enter")
-            time.sleep(0.4)
-            self.log(f"[{label}] Enter 未命中目标行，降级点击", level="WARN")
 
         click_x = px0 + (rx1 + rx2) // 2  # 复选框中心（与验证区域一致）
         click_y = py0 + cy
@@ -840,10 +709,28 @@ class FilterNavMixin:
                     (i for i, l in enumerate(lines2) if self._text_matches(l["text"], target_n)),
                     None,
                 )
-                if hl_idx is not None and tgt_idx is not None:
-                    return self._move_highlight_and_toggle(
-                        panel2, lines2, hl_idx, tgt_idx, target_n, label
-                    )
+                if tgt_idx is not None:
+                    # 阶段 1 点击可能实际已勾选成功（验证漏判），阶段 2 的双 Enter 可能已把
+                    # 状态翻转回“已勾选”。此时再按 Enter 会第三次 toggle 变成“未勾选”，
+                    # 而 _move_highlight_and_toggle 按完 Enter 直接返回 True → 筛选静默失效。
+                    # 预检：当前复选框与初始截图对比，已勾选则直接成功，不再按键。
+                    l2 = lines2[tgt_idx]
+                    x1b, y1b, x2b, y2b = l2["box"]
+                    ry1b, ry2b = max(0, y1b - 3), min(panel2.shape[0], y2b + 3)
+                    rx1b, rx2b = panel2.shape[1] - 48, panel2.shape[1] - 4
+                    now = panel2[ry1b:ry2b, rx1b:rx2b].astype(np.float32)
+                    if now.size and now.shape == before.shape:
+                        pre_diff = float(np.abs(now - before).mean())
+                        if pre_diff > _CLICK_DIFF_THRESHOLD:
+                            self.log(
+                                f"[{label}] 阶段3预检：复选框已勾选，直接确认成功 "
+                                f"预检差值={pre_diff:.1f}"
+                            )
+                            return True
+                    if hl_idx is not None:
+                        return self._move_highlight_and_toggle(
+                            panel2, lines2, hl_idx, tgt_idx, target_n, label
+                        )
         self.log(f"[{label}] 鼠标/盲 Enter/_move_highlight_and_toggle 均失败", level="ERROR")
         return False
 
